@@ -215,7 +215,7 @@ def train(config: dict) -> None:
     # Capture initial state for maxP
     if scheduler is not None:
         X_init, _ = next(iter(train_loader))
-        X_init = X_init[:32].to(device)
+        X_init = X_init.to(device)
         scheduler.capture_initial(X_init)
 
     # Training loop
@@ -227,7 +227,19 @@ def train(config: dict) -> None:
 
     print(f"Starting training for {n_steps} steps...")
     print(f"Logging train metrics every {log_freq} steps, val metrics every {val_freq} steps")
-    log_file.write("step,train_loss,train_acc,test_loss,test_acc\n")
+    
+    # Build CSV header with dynamic columns for per-layer stats if using maxP
+    base_cols = ["step", "train_loss", "train_acc", "test_loss", "test_acc"]
+    if scheduler is not None:
+        n_layers = scheduler.n_layers
+        lr_cols = [f"lr_{i}" for i in range(n_layers)]
+        alpha_cols = [f"alpha_{i}" for i in range(n_layers)]
+        omega_cols = [f"omega_{i}" for i in range(n_layers)]
+        u_cols = [f"u_{i}" for i in range(n_layers)]
+        header_cols = base_cols + lr_cols + alpha_cols + omega_cols + u_cols
+    else:
+        header_cols = base_cols
+    log_file.write(",".join(header_cols) + "\n")
 
     for step in range(1, n_steps + 1):
         X, y = next(train_iter)
@@ -264,7 +276,23 @@ def train(config: dict) -> None:
             else:
                 test_loss, test_acc = float('nan'), float('nan')
 
-            log_file.write(f"{step},{loss.item():.6f},{train_acc_batch:.6f},{test_loss:.6f},{test_acc:.6f}\n")
+            # Build log row
+            base_values = [step, f"{loss.item():.6f}", f"{train_acc_batch:.6f}", f"{test_loss:.6f}", f"{test_acc:.6f}"]
+            
+            if scheduler is not None:
+                lrs = scheduler.get_last_lr()
+                alpha, omega, u = scheduler.get_alignment()
+                
+                lr_values = [f"{lr:.6e}" for lr in lrs]
+                alpha_values = [f"{a:.6f}" if alpha else "nan" for a in (alpha or [float('nan')] * n_layers)]
+                omega_values = [f"{o:.6f}" if omega else "nan" for o in (omega or [float('nan')] * n_layers)]
+                u_values = [f"{v:.6f}" if u else "nan" for v in (u or [float('nan')] * n_layers)]
+                
+                row_values = base_values + lr_values + alpha_values + omega_values + u_values
+            else:
+                row_values = base_values
+            
+            log_file.write(",".join(map(str, row_values)) + "\n")
             log_file.flush()
 
             # Print with validation info if available

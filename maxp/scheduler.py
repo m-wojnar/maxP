@@ -188,6 +188,11 @@ class MaxPScheduler:
         self._cached_rl: list[float] | None = None
         self._initialized = False
         
+        # Cached alignment values (updated each solve step)
+        self._cached_alpha: list[float] | None = None
+        self._cached_omega: list[float] | None = None
+        self._cached_u: list[float] | None = None
+        
         # Store initial learning rates for managed groups
         self._initial_lrs = [self.optimizer.param_groups[i]["lr"] for i in self._managed_indices]
 
@@ -306,6 +311,11 @@ class MaxPScheduler:
             window = self.tracer.window(current)
             alpha, omega, u = compute_alignment(window, norm_mode=self.alignment_norm)
         
+        # Cache alignment values
+        self._cached_alpha = alpha
+        self._cached_omega = omega
+        self._cached_u = u
+        
         # Solve LP for optimal c_l
         cl, rl = find_c(
             al=self.al,
@@ -344,6 +354,30 @@ class MaxPScheduler:
         """
         return [self.optimizer.param_groups[i]["lr"] for i in self._managed_indices]
     
+    def get_alignment(self) -> tuple[list[float] | None, list[float] | None, list[float] | None]:
+        """
+        Return last computed alignment values (alpha, omega, u).
+        
+        Returns:
+            Tuple of (alpha, omega, u) lists, or (None, None, None) if not computed yet.
+            Each list has one entry per managed Linear layer.
+        """
+        return self._cached_alpha, self._cached_omega, self._cached_u
+    
+    def get_layer_names(self) -> list[str]:
+        """
+        Return names of managed Linear layers.
+        
+        Returns:
+            List of layer names in order matching other scheduler outputs.
+        """
+        return self.tracer.layer_names
+    
+    @property
+    def n_layers(self) -> int:
+        """Return number of managed Linear layers."""
+        return len(self._managed_indices)
+    
     def state_dict(self) -> dict:
         """
         Return scheduler state for checkpointing.
@@ -355,6 +389,9 @@ class MaxPScheduler:
             "step_count": self._step_count,
             "cached_cl": self._cached_cl,
             "cached_rl": self._cached_rl,
+            "cached_alpha": self._cached_alpha,
+            "cached_omega": self._cached_omega,
+            "cached_u": self._cached_u,
             "initialized": self._initialized,
         }
     
@@ -368,6 +405,9 @@ class MaxPScheduler:
         self._step_count = state_dict["step_count"]
         self._cached_cl = state_dict["cached_cl"]
         self._cached_rl = state_dict["cached_rl"]
+        self._cached_alpha = state_dict.get("cached_alpha")
+        self._cached_omega = state_dict.get("cached_omega")
+        self._cached_u = state_dict.get("cached_u")
         self._initialized = state_dict["initialized"]
         
         # Apply cached cl if available
