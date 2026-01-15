@@ -1,0 +1,32 @@
+# ViT Training on CIFAR-10 - Baseline (no maxP)
+
+seed: 42
+n_steps: 10000
+n_val_steps: 32
+log_freq: 1
+val_freq: 100
+compile: true
+device: "auto"
+
+model:
+  image_size: 32
+  patch_size: 4
+  n_layers: 6
+  embed_dim: 256
+  mlp_ratio: 4.0
+  output_dim: 10
+
+optimizer:
+  type: "adam"
+  lr_prefactor: 0.0003
+
+maxp:
+  use_maxp: false
+
+data:
+  batch_size: 128
+  num_workers: 4
+
+logging:
+  output_dir: "outputs/vit_baseline"
+  save_model: true

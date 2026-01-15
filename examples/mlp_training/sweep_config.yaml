@@ -1,0 +1,35 @@
+# Sweep configuration for MLP training
+# Defines parameter grids for hyperparameter search
+
+base_config: "config.yaml"  # Base configuration to modify
+
+# Output settings
+output_base: "outputs/mlp_sweep"
+experiment_name: "mlp_lr_width_sweep"
+
+# Parameter grids - all combinations will be explored
+sweep:
+  # Learning rate sweep
+  optimizer.lr_prefactor:
+    - 0.3
+    - 0.1
+    - 0.01
+    - 0.03
+    - 0.001
+    - 0.003
+
+  # Width sweep
+  model.hidden_dim:
+    - 64
+    - 128
+    - 256
+
+  # Depth sweep
+  model.n_layers:
+    - 3
+    - 4
+    - 5
+
+# Fixed overrides (applied to all runs)
+overrides:
+  n_steps: 2000

@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maxp"
+version = "0.1.0"
+description = "maxP: Maximal Parametrization LR Scheduler for PyTorch"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Maksymilian Wojnar"},
+    {name = "Maciej Kilian"}
+]
+keywords = ["deep learning", "neural networks", "pytorch", "learning rate scheduler"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.8.0",
+    "numpy>=2.0.0",
+    "pulp>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0",
+    "pytest-cov>=7.0.0",
+    "pyyaml>=6.0.3",
+    "torchvision>=0.24.1",
+]
+
+[project.urls]
+Repository = "https://github.com/m-wojnar/maxP"
+
+[tool.setuptools.packages.find]
+include = ["maxp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

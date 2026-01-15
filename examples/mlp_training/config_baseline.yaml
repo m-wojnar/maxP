@@ -1,0 +1,31 @@
+# MLP Training on CIFAR-10 - Baseline (no maxP)
+
+seed: 42
+n_steps: 10000
+n_val_steps: 32
+log_freq: 1
+val_freq: 100
+compile: true
+device: "auto"
+
+model:
+  input_dim: 3072
+  hidden_dim: 512
+  n_layers: 4
+  output_dim: 10
+  bias: false
+
+optimizer:
+  type: "adam"
+  lr_prefactor: 0.001
+
+maxp:
+  use_maxp: false
+
+data:
+  batch_size: 128
+  num_workers: 4
+
+logging:
+  output_dir: "outputs/mlp_baseline"
+  save_model: true
