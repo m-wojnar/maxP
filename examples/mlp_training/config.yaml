@@ -21,7 +21,7 @@ optimizer:
 
 maxp:
   use_maxp: true
-  parametrization: "mup"
+  parametrization: "sp"
   alignment: "full"
   warmup_steps: 100
   solve_interval: 1
@@ -33,4 +33,4 @@ data:
 
 logging:
   output_dir: "outputs/mlp_maxp"
-  save_model: true
+  save_model: false

@@ -21,6 +21,8 @@ optimizer:
 
 maxp:
   use_maxp: false
+  parametrization: "sp"
+  alignment: "full"
 
 data:
   batch_size: 128
@@ -28,4 +30,4 @@ data:
 
 logging:
   output_dir: "outputs/mlp_baseline"
-  save_model: true
+  save_model: false

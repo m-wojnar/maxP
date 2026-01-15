@@ -62,7 +62,6 @@ def test_resample_w0_does_not_store_initial_weights():
     for name, snap in init.layers.items():
         assert snap.weight is None
 
-    # Current captures still include weights, and bl is present.
+    # Current captures still include weights.
     for name, snap in cur.layers.items():
         assert snap.weight is not None
-        assert snap.bl is not None

@@ -22,6 +22,8 @@ optimizer:
 
 maxp:
   use_maxp: false
+  parametrization: "mup"
+  alignment: "full"
 
 data:
   batch_size: 128
@@ -29,4 +31,4 @@ data:
 
 logging:
   output_dir: "outputs/vit_baseline"
-  save_model: true
+  save_model: false

@@ -305,6 +305,9 @@ class GridVisualizer:
             ax.grid(alpha=0.3)
             ax.set_xlabel("Step")
             
+            # Collect lr info for title
+            lr_parts = []
+            
             # Plot each experiment
             for exp_idx, (exp_name, groups) in enumerate(named_experiments.items()):
                 if key not in groups:
@@ -325,14 +328,20 @@ class GridVisualizer:
                 color = self.style.get_color(exp_idx)
                 ax.plot(steps, values, color=color, linewidth=1.5, label=exp_name)
                 
-                # Add to legend
+                # Collect lr for title
+                lr_info = agg.metadata.get("lr", "")
+                if lr_info:
+                    lr_parts.append(f"{exp_name}={lr_info}")
+                
+                # Add to legend (without lr info)
                 if exp_idx >= len(legend_elements):
-                    lr_info = agg.metadata.get("lr", "")
-                    label = f"{exp_name}" + (f" (lr={lr_info})" if lr_info else "")
-                    legend_elements.append(Line2D([0], [0], color=color, label=label))
+                    legend_elements.append(Line2D([0], [0], color=color, label=exp_name))
             
-            # Subplot title
-            ax.set_title(str(key), fontsize=9)
+            # Subplot title with lr info
+            title_str = str(key)
+            if lr_parts:
+                title_str += f"\nlr: {', '.join(lr_parts)}"
+            ax.set_title(title_str, fontsize=9)
             
             if ylim:
                 ax.set_ylim(ylim)
@@ -621,7 +630,7 @@ Examples:
     parser.add_argument(
         "--smoothing",
         type=float,
-        default=None,
+        default=0.05,
         help="EMA smoothing alpha (lower = more smoothing)",
     )
     parser.add_argument(
@@ -640,7 +649,7 @@ Examples:
         "--output",
         "-o",
         type=str,
-        default=None,
+        default="plot.png",
         help="Output file path (if not set, displays plot)",
     )
     parser.add_argument(

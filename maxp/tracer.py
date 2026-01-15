@@ -24,9 +24,6 @@ class LayerSnapshot:
     
     weight: Tensor | None = None
     """Current weight matrix (out_features, in_features)."""
-    
-    bl: float | None = None
-    """b_l exponent for resampling w0, stored only if resample_w0=True."""
 
 
 @dataclass
@@ -104,6 +101,9 @@ class Tracer:
         if not self.modules:
             raise RuntimeError("Tracer: no nn.Linear layers found in model.")
         
+        # Compute fan_in once (static per layer)
+        self.fan_in: list[int] = [mod.in_features for mod in self.modules]
+        
         # Validate bl length if provided
         if bl is not None and len(bl) != len(self.modules):
             raise ValueError(
@@ -158,11 +158,6 @@ class Tracer:
                 x = x[:self.sample_size]
                 out = out[:self.sample_size]
             
-            # Get bl for this layer if using resample_w0
-            bl_val = None
-            if self.resample_w0 and self.bl is not None:
-                bl_val = self.bl[layer_idx]
-            
             weight: Tensor | None
             if self.resample_w0 and self._capturing_initial:
                 # When resampling, we don't need to store initial weights at all.
@@ -174,7 +169,6 @@ class Tracer:
                 input=x.detach().cpu().clone().contiguous(),
                 output=out.detach().cpu().clone().contiguous(),
                 weight=weight,
-                bl=bl_val,
             )
         
         return hook
@@ -245,26 +239,16 @@ class Tracer:
         Raises:
             RuntimeError: If capture_initial() hasn't been called.
         """
-        if self.initial is None:
-            raise RuntimeError(
-                "Tracer.initial not set; call capture_initial() first."
-            )
         
-        fan_in: list[int] = []
-        for layer_name in self.layer_names:
-            snap = current.layers.get(layer_name)
-            if snap is None or snap.weight is None:
-                raise RuntimeError(
-                    f"Tracer missing weight snapshot for layer {layer_name}; ensure capture() ran correctly."
-                )
-            fan_in.append(int(snap.weight.shape[1]))
+        if self.initial is None:
+            raise RuntimeError("Tracer.initial not set; call capture_initial() first.")
         
         return TraceWindow(
             init=self.initial,
             current=current,
             n_layers=len(self.layer_names),
-            fan_in=fan_in,
-            layer_names=list(self.layer_names),
+            fan_in=self.fan_in,
+            layer_names=self.layer_names,
             bl=self.bl,
             resample_w0=self.resample_w0,
         )

@@ -248,26 +248,28 @@ def train(config: dict) -> None:
         n_classes=config["model"]["output_dim"],
         mup_scaling=mup_scaling,
     )
+    
+    # Count Linear layers for initialization
+    linear_layers = get_linear_layers(model)
+    n_linear = len(linear_layers)
+    print(f"Found {n_linear} Linear layers (excluding attention)")
+
+    use_maxp = config["maxp"]["use_maxp"]
+    parametrization = config["maxp"]["parametrization"]
+    alignment = config["maxp"]["alignment"]
+    opt_type = "adam" if "adam" in config["optimizer"]["type"].lower() else "sgd"
+
+    # Initialize weights with ABC parametrization
+    initialize_abc_weights(
+        model,
+        parametrization=parametrization,
+        optimizer=opt_type,
+        alignment=alignment,
+    )
 
     if use_maxp:
-        parametrization = config["maxp"]["parametrization"]
-        alignment = config["maxp"]["alignment"]
-        opt_type = "adam" if "adam" in config["optimizer"]["type"].lower() else "sgd"
-
-        # Count Linear layers for initialization
-        linear_layers = get_linear_layers(model)
-        n_linear = len(linear_layers)
-        print(f"Found {n_linear} Linear layers (excluding attention)")
-
-        # Initialize weights with ABC parametrization
-        initialize_abc_weights(
-            model,
-            parametrization=parametrization,
-            optimizer=opt_type,
-            alignment=alignment,
-        )
-
         # Create param groups with per-layer LRs
+        lr_prefactor = config["optimizer"]["lr_prefactor"]
         param_groups = create_param_groups(
             model,
             lr_prefactor=lr_prefactor,

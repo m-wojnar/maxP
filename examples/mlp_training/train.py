@@ -156,23 +156,22 @@ def train(config: dict) -> None:
         bias=config["model"].get("bias", False),
     )
 
-    use_maxp = config["maxp"].get("use_maxp", False)
-    lr_prefactor = config["optimizer"]["lr_prefactor"]
+    use_maxp = config["maxp"]["use_maxp"]
+    parametrization = config["maxp"]["parametrization"]
+    alignment = config["maxp"]["alignment"]
+    opt_type = "adam" if "adam" in config["optimizer"]["type"].lower() else "sgd"
+
+    # Initialize weights with ABC parametrization
+    initialize_abc_weights(
+        model,
+        parametrization=parametrization,
+        optimizer=opt_type,
+        alignment=alignment,
+    )
 
     if use_maxp:
-        parametrization = config["maxp"]["parametrization"]
-        alignment = config["maxp"]["alignment"]
-        opt_type = "adam" if "adam" in config["optimizer"]["type"].lower() else "sgd"
-
-        # Initialize weights with ABC parametrization
-        initialize_abc_weights(
-            model,
-            parametrization=parametrization,
-            optimizer=opt_type,
-            alignment=alignment,
-        )
-
         # Create param groups with per-layer LRs
+        lr_prefactor = config["optimizer"]["lr_prefactor"]
         param_groups = create_param_groups(
             model,
             lr_prefactor=lr_prefactor,
