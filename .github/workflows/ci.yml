@@ -13,7 +13,6 @@ jobs:
   tests:
     name: pytest (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    continue-on-error: ${{ matrix.experimental }}
 
     strategy:
       fail-fast: false
