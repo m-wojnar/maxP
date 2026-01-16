@@ -38,7 +38,7 @@ class CIFAR10Dataset:
         dataset = datasets.CIFAR10(root=root, train=train, download=True)
         
         self.X = (torch.tensor(dataset.data).float() / 255).permute(0, 3, 1, 2)
-        self.X = self.transform(self.X).view(self.X.shape[0], -1).to(device)
+        self.X = self.transform(self.X).to(device)
         self.Y = torch.tensor(dataset.targets).to(device)   
         
         self.n_samples = self.X.shape[0]
