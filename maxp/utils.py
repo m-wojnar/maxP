@@ -272,14 +272,14 @@ def initialize_abc_weights(
     parametrization: ParametrizationType | str | None = None,
     optimizer: OptimizerType | str = "adam",
     alignment: AlignmentType | str = "full",
-    std_prefactor: float = 2**0.5,
+    std_prefactor: float = 1.0,
     apply_multipliers: bool = True,
 ) -> nn.Module:
     """
     Initialize Linear layer weights according to ABC parametrization.
     
     Re-initializes weights of all nn.Linear layers (excluding attention) using:
-        std = std_prefactor * n^{-b_l}
+        std = std_prefactor * (n^{-2b_l})^0.5
     
     where n is the layer's fan-in (input features).
     
@@ -309,7 +309,7 @@ def initialize_abc_weights(
             parametrization is provided). One of "adam" or "sgd".
         alignment: Alignment assumption for named parametrization (only used
             when parametrization is provided). One of "full" or "no".
-        std_prefactor: Base standard deviation multiplier. Default: sqrt(2).
+        std_prefactor: Base standard deviation multiplier. Default: 1.0.
         apply_multipliers: If True, wrap Linear layers with ScaledLinear to
             apply layer multipliers (n^{-a_l}). If False, only re-initialize
             weights without applying multipliers. Default: True.
@@ -372,8 +372,9 @@ def initialize_abc_weights(
     for (name, linear), a, b in zip(layers, al, bl):
         fan_in = linear.weight.shape[1]
         
-        # Re-initialize weights with ABC scaling: std = std_prefactor * n^{-b}
-        std = std_prefactor * (fan_in ** (-b))
+        # Re-initialize weights with ABC scaling: std = std_prefactor * (n^{-2b})^0.5
+        val_l = fan_in ** (-2 * b)
+        std = std_prefactor * (val_l ** 0.5)
         torch.nn.init.normal_(linear.weight, mean=0.0, std=std)
         
         # Re-initialize bias to zero if present

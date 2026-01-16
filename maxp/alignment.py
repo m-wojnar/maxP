@@ -30,14 +30,14 @@ def _spectral_norm(x: torch.Tensor) -> torch.Tensor:
     return torch.linalg.norm(x.double(), 2)
 
 
-def _resample_w0(shape: tuple[int, ...], bl: float, std_prefactor: float = 2 ** 0.5) -> torch.Tensor:
+def _resample_w0(shape: tuple[int, ...], bl: float, std_prefactor: float = 1.0) -> torch.Tensor:
     """
     Resample initial weights using ABC parametrization initialization.
     
     Args:
         shape: Weight tensor shape (out_features, in_features).
         bl: b_l exponent from ABC parametrization.
-        std_prefactor: Initialization std multiplier (default sqrt(2) for ReLU).
+        std_prefactor: Initialization std multiplier (default 1.0).
     
     Returns:
         Resampled weight tensor.
@@ -52,7 +52,7 @@ def _resample_w0(shape: tuple[int, ...], bl: float, std_prefactor: float = 2 ** 
 def compute_alignment(
     window: TraceWindow,
     resample_w0: bool | None = None,
-    std_prefactor: float = 2 ** 0.5,
+    std_prefactor: float = 1.0,
     norm_mode: str = "rms",
 ) -> tuple[list[float], list[float], list[float]]:
     """
@@ -70,7 +70,7 @@ def compute_alignment(
         window: TraceWindow containing initial and current layer states.
         resample_w0: Override window's resample_w0 setting. If True, resample
             w_0 from N(0, width^{-b_l}) instead of using stored initial weights.
-        std_prefactor: Std multiplier for resampling (default sqrt(2)).
+        std_prefactor: Std multiplier for resampling (default 1.0).
     
     Returns:
         Tuple of (alpha, omega, u) where each is a list of floats,

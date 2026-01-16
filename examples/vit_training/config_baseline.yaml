@@ -26,7 +26,7 @@ maxp:
   alignment: "full"
 
 data:
-  batch_size: 128
+  batch_size: 256
   num_workers: 4
 
 logging:
