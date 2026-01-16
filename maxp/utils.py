@@ -5,6 +5,7 @@ Utility functions for maxP scheduler.
 from dataclasses import dataclass
 from typing import Any, Literal
 
+import torch
 import torch.nn as nn
 
 
@@ -337,7 +338,6 @@ def initialize_abc_weights(
         >>> model = MyCustomMLP()  # Has its own layer multiplier logic
         >>> initialize_abc_weights(model, parametrization="mup", apply_multipliers=False)
     """
-    import torch
     
     layers = get_linear_layers(model)
     n_layers = len(layers)

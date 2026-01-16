@@ -24,11 +24,11 @@ from maxp import MaxPScheduler, create_param_groups, get_linear_layers, initiali
 
 
 class FeedForwardBlock(nn.Module):
-    def __init__(self, dim: int, mlp_ratio: float) -> None:
+    def __init__(self, dim: int, mlp_ratio: float, bias: bool) -> None:
         super(FeedForwardBlock, self).__init__()
-        self.dense1 = nn.Linear(dim, int(dim * mlp_ratio))
+        self.dense1 = nn.Linear(dim, int(dim * mlp_ratio), bias=bias)
         self.activation = nn.GELU()
-        self.dense2 = nn.Linear(int(dim * mlp_ratio), dim)
+        self.dense2 = nn.Linear(int(dim * mlp_ratio), dim, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.dense1(x)
@@ -38,11 +38,11 @@ class FeedForwardBlock(nn.Module):
 
 
 class AttentionBlock(nn.Module):
-    def __init__(self, dim: int, mup_scaling: bool) -> None:
+    def __init__(self, dim: int, mup_scaling: bool, bias: bool) -> None:
         super(AttentionBlock, self).__init__()
-        self.k = nn.Linear(dim, dim)
-        self.q = nn.Linear(dim, dim)
-        self.v = nn.Linear(dim, dim)
+        self.k = nn.Linear(dim, dim, bias=bias)
+        self.q = nn.Linear(dim, dim, bias=bias)
+        self.v = nn.Linear(dim, dim, bias=bias)
         
         if mup_scaling:
             self.scale = 1 / dim
@@ -62,10 +62,10 @@ class AttentionBlock(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, dim: int, mlp_ratio: float, mup_scaling: bool) -> None:
+    def __init__(self, dim: int, mlp_ratio: float, mup_scaling: bool, bias: bool) -> None:
         super(TransformerBlock, self).__init__()
-        self.attn = AttentionBlock(dim, mup_scaling)
-        self.ffn = FeedForwardBlock(dim, mlp_ratio)
+        self.attn = AttentionBlock(dim, mup_scaling, bias)
+        self.ffn = FeedForwardBlock(dim, mlp_ratio, bias)
         self.norm1 = nn.LayerNorm(dim)
         self.norm2 = nn.LayerNorm(dim)
 
@@ -76,9 +76,9 @@ class TransformerBlock(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, dim: int, mlp_ratio: float, n_layers: int, mup_scaling: bool) -> None:
+    def __init__(self, dim: int, mlp_ratio: float, n_layers: int, mup_scaling: bool, bias: bool) -> None:
         super(Transformer, self).__init__()
-        self.layers = nn.ModuleList([TransformerBlock(dim, mlp_ratio, mup_scaling) for _ in range(n_layers)])
+        self.layers = nn.ModuleList([TransformerBlock(dim, mlp_ratio, mup_scaling, bias) for _ in range(n_layers)])
         self.norm = nn.LayerNorm(dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -111,15 +111,16 @@ class ViT(nn.Module):
         embed_dim: int, 
         mlp_ratio: float, 
         n_classes: int, 
-        mup_scaling: bool
+        mup_scaling: bool,
+        bias: bool,
     ) -> None:
         super(ViT, self).__init__()
         self.patchify = Patchify(patch_size)
-        self.embed = nn.Linear(patch_size * patch_size * 3, embed_dim)
+        self.embed = nn.Linear(patch_size * patch_size * 3, embed_dim, bias=bias)
         self.cls_token = nn.Parameter(torch.randn(1, 1, embed_dim))
         self.pos_embed = nn.Parameter(torch.randn(1, (image_size // patch_size) ** 2 + 1, embed_dim))
-        self.transformer = Transformer(embed_dim, mlp_ratio, n_layers, mup_scaling)
-        self.readout = nn.Linear(embed_dim, n_classes)
+        self.transformer = Transformer(embed_dim, mlp_ratio, n_layers, mup_scaling, bias)
+        self.readout = nn.Linear(embed_dim, n_classes, bias=bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, *_ = x.shape
@@ -230,14 +231,6 @@ def train(config: dict) -> None:
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
 
-    use_maxp = config["maxp"].get("use_maxp", False)
-    lr_prefactor = config["optimizer"]["lr_prefactor"]
-    
-    if use_maxp and config["maxp"]["parametrization"] == "mup":
-        mup_scaling = True
-    else:
-        mup_scaling = False
-
     # Build model
     model = ViT(
         image_size=config["model"]["image_size"],
@@ -246,7 +239,8 @@ def train(config: dict) -> None:
         embed_dim=config["model"]["embed_dim"],
         mlp_ratio=config["model"]["mlp_ratio"],
         n_classes=config["model"]["output_dim"],
-        mup_scaling=mup_scaling,
+        mup_scaling=config["maxp"]["use_maxp"] and config["maxp"]["parametrization"] == "mup",
+        bias=config["model"]["bias"],
     )
     
     # Count Linear layers for initialization
