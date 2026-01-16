@@ -11,16 +11,45 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import Iterator
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import yaml
-from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
 from maxp import MaxPScheduler, create_param_groups, initialize_abc_weights
+
+
+class CIFAR10Dataset:
+    """Simple CIFAR-10 dataset that loads data into tensors and provides iterators."""
+
+    def __init__(
+        self,
+        batch_size: int,
+        train: bool = True,
+        device: str = "cpu",
+        root: str = "./data",
+    ):
+        self.batch_size = batch_size
+        self.device = device
+
+        self.transform = transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616))
+        dataset = datasets.CIFAR10(root=root, train=train, download=True)
+        
+        self.X = (torch.tensor(dataset.data).float() / 255).permute(0, 3, 1, 2)
+        self.X = self.transform(self.X).view(self.X.shape[0], -1).to(device)
+        self.Y = torch.tensor(dataset.targets).to(device)   
+        
+        self.n_samples = self.X.shape[0]
+
+    def __iter__(self):
+        while True:
+            idx = torch.randint(0, self.n_samples, (self.batch_size,))
+            yield self.X[idx], self.Y[idx]
+
+    def __len__(self):
+        return self.n_samples // self.batch_size
 
 
 class MLP(nn.Module):
@@ -77,38 +106,23 @@ def get_optimizer(model: nn.Module, config: dict, param_groups=None) -> torch.op
         raise ValueError(f"Unknown optimizer: {opt_type}")
 
 
-def get_data_loaders(config: dict) -> tuple[DataLoader, DataLoader]:
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
-    ])
-
-    train_dataset = datasets.CIFAR10(
-        root="./data", train=True, download=True, transform=transform
-    )
-    test_dataset = datasets.CIFAR10(
-        root="./data", train=False, download=True, transform=transform
-    )
-
-    train_loader = DataLoader(
-        train_dataset,
+def get_data(config: dict, device: torch.device) -> tuple[CIFAR10Dataset, CIFAR10Dataset]:
+    train_dataset = CIFAR10Dataset(
         batch_size=config["data"]["batch_size"],
-        shuffle=True,
-        num_workers=config["data"].get("num_workers", 4),
-        pin_memory=True,
+        train=True,
+        device=device,
+        root="./data",
     )
-    test_loader = DataLoader(
-        test_dataset,
+    test_dataset = CIFAR10Dataset(
         batch_size=config["data"]["batch_size"],
-        shuffle=False,
-        num_workers=config["data"].get("num_workers", 4),
-        pin_memory=True,
+        train=False,
+        device=device,
+        root="./data",
     )
+    return train_dataset, test_dataset
 
-    return train_loader, test_loader
 
-
-def evaluate(model: nn.Module, iter: Iterator, n_steps: int, device: torch.device) -> tuple[float, float]:
+def evaluate(model: nn.Module, test_iter, n_steps: int) -> tuple[float, float]:
     model.eval()
     correct = 0
     total = 0
@@ -116,8 +130,7 @@ def evaluate(model: nn.Module, iter: Iterator, n_steps: int, device: torch.devic
 
     with torch.no_grad():
         for _ in range(n_steps):
-            X, y = next(iter)
-            X, y = X.to(device), y.to(device)
+            X, y = next(test_iter)
             logits = model(X)
             loss = F.cross_entropy(logits, y)
             total_loss += loss.item() * y.size(0)
@@ -125,12 +138,6 @@ def evaluate(model: nn.Module, iter: Iterator, n_steps: int, device: torch.devic
             total += y.size(0)
 
     return total_loss / total, correct / total
-
-
-def infinite_iter(loader: DataLoader):
-    while True:
-        for batch in loader:
-            yield batch
 
 
 def train(config: dict) -> None:
@@ -208,13 +215,12 @@ def train(config: dict) -> None:
     model.train()
 
     # Data
-    train_loader, test_loader = get_data_loaders(config)
-    train_iter, test_iter = infinite_iter(train_loader), infinite_iter(test_loader)
+    train_dataset, test_dataset = get_data(config, device)
+    train_iter, test_iter = iter(train_dataset), iter(test_dataset)
 
     # Capture initial state for maxP
     if scheduler is not None:
-        X_init, _ = next(iter(train_loader))
-        X_init = X_init.to(device)
+        X_init, _ = next(iter(train_dataset))
         scheduler.capture_initial(X_init)
 
     # Training loop
@@ -242,7 +248,6 @@ def train(config: dict) -> None:
 
     for step in range(1, n_steps + 1):
         X, y = next(train_iter)
-        X, y = X.to(device), y.to(device)
 
         # Forward
         optimizer.zero_grad()
@@ -270,7 +275,7 @@ def train(config: dict) -> None:
         if step % log_freq == 0 or step == 1:
             # Evaluate on validation set if val_freq is reached
             if step % val_freq == 0 or step == 1:
-                test_loss, test_acc = evaluate(model, test_iter, n_val_steps, device)
+                test_loss, test_acc = evaluate(model, test_iter, n_val_steps)
                 model.train()
             else:
                 test_loss, test_acc = float('nan'), float('nan')
@@ -303,7 +308,7 @@ def train(config: dict) -> None:
     log_file.close()
 
     # Final evaluation
-    test_loss, test_acc = evaluate(model, test_iter, n_val_steps, device)
+    test_loss, test_acc = evaluate(model, test_iter, n_val_steps)
     print(f"\nFinal Test Accuracy: {test_acc:.2%}")
 
     # Save model

@@ -28,7 +28,6 @@ maxp:
 
 data:
   batch_size: 256
-  num_workers: 4
 
 logging:
   output_dir: "outputs/vit_baseline"
