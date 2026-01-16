@@ -422,12 +422,12 @@ class ChainedMaxPScheduler:
     Combines the per-layer learning rate adjustment from MaxPScheduler with
     global decay schedules (e.g., CosineAnnealingLR, LinearLR). On each step:
     
-    1. MaxPScheduler computes per-layer LRs based on alignment measurements
-    2. Chained schedulers apply multiplicative decay factors
-    3. Final LRs preserve MaxP's per-layer ratios while applying global decay
+    1. Chained schedulers apply their decay schedules to a reference param group
+    2. The relative LR change is computed and applied to MaxPScheduler's lr_prefactor
+    3. MaxPScheduler computes per-layer LRs using the updated lr_prefactor
     
-    The decay factor is computed from the first managed param group and applied
-    uniformly to all managed groups, ensuring per-layer LR ratios are preserved.
+    This ensures that external schedulers control the overall learning rate scale
+    while MaxP handles per-layer LR ratios based on alignment measurements.
     
     If the schedulers list is empty, this wrapper behaves identically to the
     underlying MaxPScheduler.
@@ -474,9 +474,8 @@ class ChainedMaxPScheduler:
                     f"All schedulers must share the same optimizer as MaxPScheduler."
                 )
         
-        # Store base LRs (will be captured after capture_initial)
-        self._base_lrs: list[float] | None = None
-        self._maxp_lrs: list[float] | None = None
+        # Store initial lr_prefactor
+        self._initial_lr_prefactor = maxp_scheduler.lr_prefactor
         self._last_lr: list[float] = []
         
         # Track managed indices from MaxPScheduler
@@ -486,65 +485,51 @@ class ChainedMaxPScheduler:
         """
         Capture initial state before training begins.
         
-        Delegates to MaxPScheduler and captures base LRs for decay computation.
+        Delegates to MaxPScheduler.
         
         Args:
             X: Input batch for forward pass to capture initial activations.
         """
         self.maxp_scheduler.capture_initial(X)
-        # Capture base LRs after MaxP initialization (before any decay)
-        self._base_lrs = [self.optimizer.param_groups[i]["lr"] for i in self._managed_indices]
-        self._last_lr = list(self._base_lrs)
+        self._last_lr = self.maxp_scheduler.get_last_lr()
     
     def step(self, X: torch.Tensor | None = None) -> None:
         """
-        Update learning rates using MaxP and apply decay from chained schedulers.
+        Update learning rates using chained schedulers and MaxP.
         
-        1. MaxPScheduler computes per-layer LRs based on alignment
-        2. Chained schedulers apply their decay schedules
-        3. Decay factor is computed and applied uniformly to preserve LR ratios
+        1. Capture current LR from first managed param group
+        2. Step all chained schedulers to get the LR change
+        3. Apply the relative change to MaxPScheduler's lr_prefactor
+        4. MaxPScheduler computes per-layer LRs using the updated lr_prefactor
         
         Args:
             X: Input batch for alignment computation. If None, MaxP skips
                 alignment computation and uses cached values.
         """
-        # Step 1: Let MaxP compute per-layer LRs
-        self.maxp_scheduler.step(X)
-        self._maxp_lrs = self.maxp_scheduler.get_last_lr()
-        
-        # If no chained schedulers, we're done
-        if not self.schedulers:
-            self._last_lr = list(self._maxp_lrs)
+        # If no chained schedulers, just step MaxP
+        if not self.schedulers or len(self._managed_indices) == 0:
+            self.maxp_scheduler.step(X)
+            self._last_lr = self.maxp_scheduler.get_last_lr()
             return
+        
+        # Step 1: Capture LR before chained schedulers step
+        first_idx = self._managed_indices[0]
+        lr_before = self.optimizer.param_groups[first_idx]["lr"]
         
         # Step 2: Step all chained schedulers
         for sched in self.schedulers:
             sched.step()
         
-        # Step 3: Compute decay factor from first managed param group
-        # After chained schedulers step, the optimizer has decayed LRs
-        if self._base_lrs is None or len(self._managed_indices) == 0:
-            self._last_lr = list(self._maxp_lrs)
-            return
+        # Step 3: Compute LR change and apply to lr_prefactor
+        lr_after = self.optimizer.param_groups[first_idx]["lr"]
         
-        first_idx = self._managed_indices[0]
-        current_lr = self.optimizer.param_groups[first_idx]["lr"]
-        base_lr = self._base_lrs[0]
+        if lr_before != 0:
+            lr_change_factor = lr_after / lr_before
+            self.maxp_scheduler.lr_prefactor *= lr_change_factor
         
-        # Avoid division by zero
-        if base_lr == 0:
-            decay_factor = 1.0
-        else:
-            decay_factor = current_lr / base_lr
-        
-        # Step 4: Apply decay factor to MaxP's per-layer LRs
-        final_lrs = []
-        for idx, (group_idx, maxp_lr) in enumerate(zip(self._managed_indices, self._maxp_lrs)):
-            final_lr = maxp_lr * decay_factor
-            self.optimizer.param_groups[group_idx]["lr"] = final_lr
-            final_lrs.append(final_lr)
-        
-        self._last_lr = final_lrs
+        # Step 4: Let MaxP compute per-layer LRs using updated lr_prefactor
+        self.maxp_scheduler.step(X)
+        self._last_lr = self.maxp_scheduler.get_last_lr()
     
     def get_last_lr(self) -> list[float]:
         """
@@ -594,8 +579,8 @@ class ChainedMaxPScheduler:
         return {
             "maxp_scheduler": self.maxp_scheduler.state_dict(),
             "chained_schedulers": [s.state_dict() for s in self.schedulers],
-            "base_lrs": self._base_lrs,
-            "maxp_lrs": self._maxp_lrs,
+            "initial_lr_prefactor": self._initial_lr_prefactor,
+            "current_lr_prefactor": self.maxp_scheduler.lr_prefactor,
             "last_lr": self._last_lr,
         }
     
@@ -614,6 +599,7 @@ class ChainedMaxPScheduler:
         for sched, sched_state in zip(self.schedulers, chained_states):
             sched.load_state_dict(sched_state)
         
-        self._base_lrs = state_dict.get("base_lrs")
-        self._maxp_lrs = state_dict.get("maxp_lrs")
+        self._initial_lr_prefactor = state_dict.get("initial_lr_prefactor", self._initial_lr_prefactor)
+        if "current_lr_prefactor" in state_dict:
+            self.maxp_scheduler.lr_prefactor = state_dict["current_lr_prefactor"]
         self._last_lr = state_dict.get("last_lr", [])
