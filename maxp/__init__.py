@@ -6,7 +6,7 @@ using alignment measurements between initial and current weights/activations,
 solved via linear programming.
 """
 
-from maxp.scheduler import MaxPScheduler
+from maxp.scheduler import MaxPScheduler, ChainedMaxPScheduler
 from maxp.tracer import Tracer, LayerSnapshot, StepTrace, TraceWindow
 from maxp.alignment import compute_alignment
 from maxp.solver import find_c, find_c_adam, find_c_sgd
@@ -19,6 +19,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "MaxPScheduler",
+    "ChainedMaxPScheduler",
     "Tracer",
     "LayerSnapshot",
     "StepTrace",
