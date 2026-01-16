@@ -27,7 +27,7 @@ maxp:
   alignment: "full"
   warmup_steps: 100
   solve_interval: 1
-  alignment_norm: "rms"
+  alignment_norm: "spectral"
 
 data:
   batch_size: 256

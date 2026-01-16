@@ -17,6 +17,7 @@ sweep:
     - 0.03
     - 0.001
     - 0.003
+    - 0.0001
 
   # Width sweep (embed_dim)
   model.embed_dim:
@@ -28,8 +29,7 @@ sweep:
   model.n_layers:
     - 4
     - 6
-    - 8
 
 # Fixed overrides (applied to all runs)
 overrides:
-  n_steps: 5000
+  n_steps: 2500
