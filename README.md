@@ -128,6 +128,52 @@ scheduler = MaxPScheduler(
 )
 ```
 
+### Chaining with Other LR Schedulers
+
+Combine MaxPScheduler with standard PyTorch learning rate schedulers (e.g., cosine annealing, linear warmup) using `ChainedMaxPScheduler`:
+
+```python
+from maxp import MaxPScheduler, ChainedMaxPScheduler, create_param_groups, initialize_abc_weights
+
+# Create MaxP scheduler
+maxp_scheduler = MaxPScheduler(
+    optimizer, model,
+    parametrization="mup",
+    lr_prefactor=0.1,
+    warmup_steps=100,
+)
+
+# Create standard PyTorch schedulers
+cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000)
+
+# Chain them together
+scheduler = ChainedMaxPScheduler(maxp_scheduler, [cosine_scheduler])
+
+# Use like MaxPScheduler
+scheduler.capture_initial(X_init)
+for X, y in train_loader:
+    optimizer.zero_grad()
+    loss = criterion(model(X), y)
+    loss.backward()
+    optimizer.step()
+    scheduler.step(X)
+```
+
+The chained scheduler works by:
+
+1. Letting the external schedulers control the global base learning rate
+2. MaxPScheduler handles per-layer LR ratios based on alignment measurements
+3. On each step, the relative LR change from external schedulers is applied to MaxP's `lr_prefactor`
+
+You can chain multiple schedulers together:
+
+```python
+# Warmup + cosine decay
+warmup = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, total_iters=100)
+cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000)
+scheduler = ChainedMaxPScheduler(maxp_scheduler, [warmup, cosine])
+```
+
 ### Checkpointing
 
 Save and restore scheduler state:
