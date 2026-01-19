@@ -55,7 +55,7 @@ def test_smoke_tiny_training_loop_no_crash_and_lr_updates_after_warmup():
         al=al,
         bl=bl,
         lr_prefactor=0.1,
-        warmup_steps=2,
+        solver_warmup_steps=2,
         solve_interval=1,
         resample_w0=False,
     )
@@ -124,7 +124,7 @@ def test_smoke_model_with_layernorm_and_biases():
         al=al,
         bl=bl,
         lr_prefactor=0.1,
-        warmup_steps=1,
+        solver_warmup_steps=1,
         solve_interval=1,
         resample_w0=False,
     )

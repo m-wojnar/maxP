@@ -46,7 +46,7 @@ scheduler = MaxPScheduler(
     model,
     parametrization="mup",
     lr_prefactor=lr_prefactor,
-    warmup_steps=100,
+    solver_warmup_steps=100,
 )
 
 # 5. Capture initial state BEFORE training
@@ -123,10 +123,36 @@ scheduler = MaxPScheduler(
     optimizer, model,
     parametrization="mup",
     lr_prefactor=0.001,
-    warmup_steps=100,
+    solver_warmup_steps=100,
     solve_interval=10,  # Solve LP every 10 steps
 )
 ```
+
+### WSD (Warmup-Stable-Decay) Schedule
+
+Built-in support for WSD learning rate schedules with independent LR warmup and LP solver warmup. During the decay phase, the LP solver stops and per-layer LRs are frozen at their last computed values.
+
+```python
+scheduler = MaxPScheduler(
+    optimizer, model,
+    parametrization="mup",
+    lr_prefactor=0.001,
+    solver_warmup_steps=100,       # LP solver starts after 100 steps
+    wsd_warmup_steps=500,          # Linear LR warmup: 500 steps
+    wsd_stable_steps=9000,         # Stable LR phase: 9000 steps
+    wsd_decay_steps=500,           # Decay phase: 500 steps
+    wsd_decay_type="cosine",       # "cosine" or "linear"
+    wsd_min_factor=0.0,            # Decay to 0% of base LR
+)
+```
+
+The WSD schedule consists of three phases:
+
+1. **Warmup** (`wsd_warmup_steps`): Linear ramp from `wsd_min_factor × lr` to `lr`
+2. **Stable** (`wsd_stable_steps`): Constant learning rate, LP solver actively adjusts per-layer LRs
+3. **Decay** (`wsd_decay_steps`): LP solver stops, frozen per-layer LRs decay from `lr` to `wsd_min_factor × lr`
+
+WSD is disabled by default (`wsd_decay_type="none"`). When enabled, both `wsd_stable_steps` and `wsd_decay_steps` are required.
 
 ### Chaining with Other LR Schedulers
 
@@ -140,7 +166,7 @@ maxp_scheduler = MaxPScheduler(
     optimizer, model,
     parametrization="mup",
     lr_prefactor=0.1,
-    warmup_steps=100,
+    solver_warmup_steps=100,
 )
 
 # Create standard PyTorch schedulers

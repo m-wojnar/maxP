@@ -4,7 +4,8 @@ MaxP Learning Rate Scheduler.
 Dynamically adjusts per-layer learning rates using alignment measurements
 between initial and current weights/activations, solved via linear programming.
 """
-
+import math
+from typing import Literal
 import numpy as np
 import pulp as plp
 import torch
@@ -57,9 +58,9 @@ class MaxPScheduler:
         alignment_assumption: Alignment assumption for named parametrizations.
             One of "full" or "no", used when `parametrization` is provided. Default: "full".
         lr_prefactor: Base learning rate multiplier.
-        warmup_steps: Number of steps before engaging the LP solver.
-            During warmup, learning rates remain at their initial values.
-            Default: 100.
+        solver_warmup_steps: Number of steps before engaging the LP solver.
+            During solver warmup, base learning rate remains at its initial value
+            (but WSD warmup is still applied). Default: 100.
         sample_size: Number of samples to use for activation capture.
             Default: 32.
         solve_interval: How often to solve the LP (every N steps).
@@ -74,6 +75,18 @@ class MaxPScheduler:
             (r_{L-1} = 0) in LP. Default: False.
         alignment_norm: Norm to use for alignment computation. Either "spectral" or "rms".
             Default: "rms".
+        wsd_warmup_steps: Number of steps for linear LR warmup from wsd_min_factor to 1.0.
+            Independent of solver_warmup_steps. Default: 0 (no LR warmup).
+        wsd_stable_steps: Number of steps for stable LR phase (multiplier = 1.0).
+            Required when wsd_decay_type != "none". Default: None.
+        wsd_decay_steps: Number of steps for LR decay phase.
+            Required when wsd_decay_type != "none". During decay, the LP solver
+            stops and per-layer LRs are frozen at their last computed values,
+            with only the decay multiplier applied. Default: None.
+        wsd_decay_type: Type of decay schedule. One of "none", "cosine", or "linear".
+            Default: "none" (WSD disabled).
+        wsd_min_factor: Minimum LR as fraction of lr_prefactor, used for warmup start
+            and decay end. Default: 0.0.
     
     Example using named parametrization:
         >>> model = MLP(width=128, depth=4)
@@ -117,13 +130,18 @@ class MaxPScheduler:
         bl: list[float] | None = None,
         parametrization: ParametrizationType | None = None,
         alignment_assumption: AlignmentType = "full",
-        warmup_steps: int = 100,
+        solver_warmup_steps: int = 100,
         sample_size: int = 32,
         solve_interval: int = 1,
         solver: plp.LpSolver | None = None,
         resample_w0: bool = False,
         feature_learning: bool = False,
         alignment_norm: str = "rms",
+        wsd_warmup_steps: int = 0,
+        wsd_stable_steps: int | None = None,
+        wsd_decay_steps: int | None = None,
+        wsd_decay_type: Literal["none", "cosine", "linear"] = "none",
+        wsd_min_factor: float = 0.0,
     ):
         self.optimizer = optimizer
         self.model = model
@@ -140,13 +158,28 @@ class MaxPScheduler:
             optimizer_type=self.optimizer_type,
             n_layers=n_layers,
         )
-        self.warmup_steps = warmup_steps
+        self.solver_warmup_steps = solver_warmup_steps
         self.sample_size = sample_size
         self.solve_interval = solve_interval
         self.solver = solver
         self.resample_w0 = resample_w0
         self.feature_learning = feature_learning
         self.alignment_norm = alignment_norm
+        
+        # WSD parameters
+        self.wsd_warmup_steps = wsd_warmup_steps
+        self.wsd_stable_steps = wsd_stable_steps
+        self.wsd_decay_steps = wsd_decay_steps
+        self.wsd_decay_type = wsd_decay_type
+        self.wsd_min_factor = wsd_min_factor
+        
+        # Validate WSD parameters
+        if wsd_decay_type != "none":
+            if wsd_stable_steps is None or wsd_decay_steps is None:
+                raise ValueError(
+                    f"When wsd_decay_type is '{wsd_decay_type}', both wsd_stable_steps and "
+                    f"wsd_decay_steps must be provided."
+                )
         
         # Identify which param groups are managed by maxP (Linear weights)
         self._managed_indices: list[int] = []
@@ -192,6 +225,10 @@ class MaxPScheduler:
         self._cached_alpha: list[float] | None = None
         self._cached_omega: list[float] | None = None
         self._cached_u: list[float] | None = None
+        
+        # WSD state: frozen LRs (before WSD multiplier) for decay phase
+        self._frozen_lrs: list[float] | None = None
+        self._in_decay_phase = False
         
         # Store initial learning rates for managed groups
         self._initial_lrs = [self.optimizer.param_groups[i]["lr"] for i in self._managed_indices]
@@ -271,32 +308,108 @@ class MaxPScheduler:
         self.tracer.capture_initial(X)
         self._initialized = True
     
+    def _get_wsd_multiplier(self) -> float:
+        """
+        Compute WSD (Warmup-Stable-Decay) learning rate multiplier.
+        
+        Returns a multiplier in [wsd_min_factor, 1.0] based on current step:
+        - Warmup phase: linear ramp from wsd_min_factor to 1.0
+        - Stable phase: constant 1.0
+        - Decay phase: cosine or linear decay from 1.0 to wsd_min_factor
+        
+        Returns:
+            Learning rate multiplier to apply on top of base LRs.
+        """
+        step = self._step_count
+        
+        # Warmup phase: linear ramp from wsd_min_factor to 1.0
+        if step <= self.wsd_warmup_steps:
+            if self.wsd_warmup_steps == 0:
+                return 1.0
+            t = step / self.wsd_warmup_steps
+            return self.wsd_min_factor + (1.0 - self.wsd_min_factor) * t
+        
+        # If WSD decay is disabled, always return 1.0 after warmup
+        if self.wsd_decay_type == "none":
+            return 1.0
+        
+        # Stable phase: constant 1.0
+        stable_end = self.wsd_warmup_steps + self.wsd_stable_steps
+        if step <= stable_end:
+            return 1.0
+        
+        # Decay phase: cosine or linear decay from 1.0 to wsd_min_factor
+        decay_progress = (step - stable_end) / self.wsd_decay_steps
+        decay_progress = min(decay_progress, 1.0)  # Clamp to [0, 1]
+        
+        if self.wsd_decay_type == "cosine":
+            # Cosine decay: 1.0 -> wsd_min_factor
+            cosine_factor = 0.5 * (1.0 + math.cos(math.pi * decay_progress))
+            return self.wsd_min_factor + (1.0 - self.wsd_min_factor) * cosine_factor
+        elif self.wsd_decay_type == "linear":
+            # Linear decay: 1.0 -> wsd_min_factor
+            return 1.0 - (1.0 - self.wsd_min_factor) * decay_progress
+        else:
+            return 1.0
+    
+    def _is_in_decay_phase(self) -> bool:
+        """Check if we're in the decay phase of WSD schedule."""
+        if self.wsd_decay_type == "none":
+            return False
+        stable_end = self.wsd_warmup_steps + self.wsd_stable_steps
+        return self._step_count > stable_end
+    
     def step(self, X: torch.Tensor | None = None) -> None:
         """
-        Update learning rates based on current alignment.
+        Update learning rates based on current alignment and WSD schedule.
         
         Should be called after each optimizer.step().
         
-        If X is provided and we're past warmup and on a solve interval step,
+        If X is provided and we're past solver warmup and on a solve interval step,
         computes alignment and solves LP for new learning rates.
         Otherwise, uses cached learning rates from last solve.
+        
+        During WSD decay phase, the LP solver stops and per-layer LRs are frozen
+        at their last computed values. Only the decay multiplier is applied.
         
         Args:
             X: Input batch for alignment computation. If None, skips
                 alignment computation and uses cached values.
         """
-
         self._step_count += 1
         
-        # During warmup or if no input provided, keep current LRs
-        if self._step_count <= self.warmup_steps or X is None:
+        # Get WSD multiplier for this step
+        wsd_mult = self._get_wsd_multiplier()
+        
+        # Check if we're entering decay phase
+        if self._is_in_decay_phase() and not self._in_decay_phase:
+            # Freeze LRs at current values (before WSD multiplier)
+            self._frozen_lrs = [
+                self.optimizer.param_groups[i]["lr"] for i in self._managed_indices
+            ]
+            self._in_decay_phase = True
+        
+        # During decay phase: apply only WSD multiplier to frozen LRs
+        if self._in_decay_phase and self._frozen_lrs is not None:
+            for group_idx, frozen_lr in zip(self._managed_indices, self._frozen_lrs):
+                self.optimizer.param_groups[group_idx]["lr"] = frozen_lr * wsd_mult
+            return
+        
+        # During solver warmup or if no input provided, apply WSD multiplier to initial LRs
+        if self._step_count <= self.solver_warmup_steps or X is None:
+            for group_idx, initial_lr in zip(self._managed_indices, self._initial_lrs):
+                self.optimizer.param_groups[group_idx]["lr"] = initial_lr * wsd_mult
             return
         
         # Check if we should solve this step
         if self._step_count % self.solve_interval != 0:
-            # Use cached values if available
+            # Use cached values if available, with WSD multiplier
             if self._cached_cl is not None:
-                self._apply_cl(self._cached_cl)
+                self._apply_cl(self._cached_cl, wsd_mult)
+            else:
+                # No cached cl yet, apply WSD multiplier to initial LRs
+                for group_idx, initial_lr in zip(self._managed_indices, self._initial_lrs):
+                    self.optimizer.param_groups[group_idx]["lr"] = initial_lr * wsd_mult
             return
         
         # Ensure initialized
@@ -333,16 +446,21 @@ class MaxPScheduler:
             # Keep previous LRs if solve failed
             return
         
-        # Cache and apply
+        # Cache and apply with WSD multiplier
         self._cached_cl = cl
         self._cached_rl = rl
-        self._apply_cl(cl)
+        self._apply_cl(cl, wsd_mult)
     
-    def _apply_cl(self, cl: list[float]) -> None:
-        """Apply learning rate exponents to managed optimizer param groups."""
+    def _apply_cl(self, cl: list[float], wsd_mult: float = 1.0) -> None:
+        """Apply learning rate exponents to managed optimizer param groups.
+        
+        Args:
+            cl: List of c_l exponents from LP solver.
+            wsd_mult: WSD multiplier to apply on top of base LRs.
+        """
         for idx, (group_idx, c) in enumerate(zip(self._managed_indices, cl)):
             fan_in = self._fan_in[idx]
-            lr = self.lr_prefactor * (fan_in ** (-c))
+            lr = self.lr_prefactor * (fan_in ** (-c)) * wsd_mult
             self.optimizer.param_groups[group_idx]["lr"] = lr
     
     def get_last_lr(self) -> list[float]:
@@ -393,6 +511,8 @@ class MaxPScheduler:
             "cached_omega": self._cached_omega,
             "cached_u": self._cached_u,
             "initialized": self._initialized,
+            "frozen_lrs": self._frozen_lrs,
+            "in_decay_phase": self._in_decay_phase,
         }
     
     def load_state_dict(self, state_dict: dict) -> None:
@@ -410,9 +530,14 @@ class MaxPScheduler:
         self._cached_u = state_dict.get("cached_u")
         self._initialized = state_dict["initialized"]
         
-        # Apply cached cl if available
+        # WSD state
+        self._frozen_lrs = state_dict.get("frozen_lrs")
+        self._in_decay_phase = state_dict.get("in_decay_phase", False)
+        
+        # Apply cached cl if available, with current WSD multiplier
         if self._cached_cl is not None:
-            self._apply_cl(self._cached_cl)
+            wsd_mult = self._get_wsd_multiplier()
+            self._apply_cl(self._cached_cl, wsd_mult)
 
 
 class ChainedMaxPScheduler:

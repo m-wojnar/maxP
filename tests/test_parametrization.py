@@ -114,7 +114,7 @@ class TestSchedulerWithParametrization:
             opt, model, 
             parametrization="mup",
             lr_prefactor=0.1, 
-            warmup_steps=3
+            solver_warmup_steps=3
         )
         
         abc = get_abc_parametrization(n_layers=3, parametrization="mup", optimizer="adam", alignment="full")
@@ -153,7 +153,7 @@ class TestSchedulerWithParametrization:
             parametrization="ntk",
             alignment_assumption="no",
             lr_prefactor=0.1,
-            warmup_steps=0
+            solver_warmup_steps=0
         )
         
         abc = get_abc_parametrization(n_layers=3, parametrization="ntk", optimizer="sgd", alignment="no")
@@ -230,7 +230,7 @@ class TestSchedulerWithParametrization:
             opt, model,
             al=al, bl=bl,
             lr_prefactor=0.1,
-            warmup_steps=0
+            solver_warmup_steps=0
         )
         
         assert sched.al == al

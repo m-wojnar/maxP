@@ -28,7 +28,7 @@ def test_scheduler_warmup_keeps_lrs_constant():
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
     opt = torch.optim.AdamW(groups)
     sched = MaxPScheduler(
-        opt, model, al=al, bl=bl, lr_prefactor=0.1, warmup_steps=3, solve_interval=1
+        opt, model, al=al, bl=bl, lr_prefactor=0.1, solver_warmup_steps=3, solve_interval=1
     )
 
     X0 = torch.randn(16, 4)
@@ -61,7 +61,7 @@ def test_scheduler_solve_interval_caches_lrs():
         al=al,
         bl=bl,
         lr_prefactor=0.1,
-        warmup_steps=0,
+        solver_warmup_steps=0,
         solve_interval=2,
     )
 
@@ -103,7 +103,7 @@ def test_scheduler_resample_w0_runs():
         al=al,
         bl=bl,
         lr_prefactor=0.1,
-        warmup_steps=0,
+        solver_warmup_steps=0,
         solve_interval=1,
         resample_w0=True,
     )
@@ -132,7 +132,7 @@ def test_chained_scheduler_applies_cosine_decay():
     opt = torch.optim.AdamW(groups)
     
     maxp_sched = MaxPScheduler(
-        opt, model, al=al, bl=bl, lr_prefactor=0.1, warmup_steps=0, solve_interval=1
+        opt, model, al=al, bl=bl, lr_prefactor=0.1, solver_warmup_steps=0, solve_interval=1
     )
     cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=10)
     chained_sched = ChainedMaxPScheduler(maxp_sched, [cosine_sched])
@@ -168,7 +168,7 @@ def test_chained_scheduler_preserves_layer_ratios():
     opt = torch.optim.AdamW(groups)
     
     maxp_sched = MaxPScheduler(
-        opt, model, al=al, bl=bl, lr_prefactor=0.1, warmup_steps=0, solve_interval=1
+        opt, model, al=al, bl=bl, lr_prefactor=0.1, solver_warmup_steps=0, solve_interval=1
     )
     cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=10)
     chained_sched = ChainedMaxPScheduler(maxp_sched, [cosine_sched])
@@ -214,7 +214,7 @@ def test_chained_scheduler_multiple_schedulers():
     opt = torch.optim.AdamW(groups)
     
     maxp_sched = MaxPScheduler(
-        opt, model, al=al, bl=bl, lr_prefactor=0.1, warmup_steps=0, solve_interval=1
+        opt, model, al=al, bl=bl, lr_prefactor=0.1, solver_warmup_steps=0, solve_interval=1
     )
     # Linear warmup for first 3 steps
     warmup_sched = torch.optim.lr_scheduler.LinearLR(opt, start_factor=0.1, total_iters=3)
@@ -252,7 +252,7 @@ def test_chained_scheduler_state_dict_roundtrip():
     opt = torch.optim.AdamW(groups)
     
     maxp_sched = MaxPScheduler(
-        opt, model, al=al, bl=bl, lr_prefactor=0.1, warmup_steps=0, solve_interval=1
+        opt, model, al=al, bl=bl, lr_prefactor=0.1, solver_warmup_steps=0, solve_interval=1
     )
     cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=10)
     chained_sched = ChainedMaxPScheduler(maxp_sched, [cosine_sched])
@@ -278,7 +278,7 @@ def test_chained_scheduler_state_dict_roundtrip():
     opt2 = torch.optim.AdamW(groups2)
     
     maxp_sched2 = MaxPScheduler(
-        opt2, model2, al=al, bl=bl, lr_prefactor=0.1, warmup_steps=0, solve_interval=1
+        opt2, model2, al=al, bl=bl, lr_prefactor=0.1, solver_warmup_steps=0, solve_interval=1
     )
     cosine_sched2 = torch.optim.lr_scheduler.CosineAnnealingLR(opt2, T_max=10)
     chained_sched2 = ChainedMaxPScheduler(maxp_sched2, [cosine_sched2])
@@ -306,7 +306,7 @@ def test_chained_scheduler_empty_list():
     groups1 = create_param_groups(model, lr_prefactor=0.1, cl=cl)
     opt1 = torch.optim.AdamW(groups1)
     maxp_sched = MaxPScheduler(
-        opt1, model, al=al, bl=bl, lr_prefactor=0.1, warmup_steps=0, solve_interval=1
+        opt1, model, al=al, bl=bl, lr_prefactor=0.1, solver_warmup_steps=0, solve_interval=1
     )
     
     torch.manual_seed(0)
@@ -314,7 +314,7 @@ def test_chained_scheduler_empty_list():
     groups2 = create_param_groups(model2, lr_prefactor=0.1, cl=cl)
     opt2 = torch.optim.AdamW(groups2)
     maxp_sched2 = MaxPScheduler(
-        opt2, model2, al=al, bl=bl, lr_prefactor=0.1, warmup_steps=0, solve_interval=1
+        opt2, model2, al=al, bl=bl, lr_prefactor=0.1, solver_warmup_steps=0, solve_interval=1
     )
     chained_sched = ChainedMaxPScheduler(maxp_sched2, [])  # Empty list
 
@@ -353,7 +353,7 @@ def test_chained_scheduler_delegation_methods():
     opt = torch.optim.AdamW(groups)
     
     maxp_sched = MaxPScheduler(
-        opt, model, al=al, bl=bl, lr_prefactor=0.1, warmup_steps=0, solve_interval=1
+        opt, model, al=al, bl=bl, lr_prefactor=0.1, solver_warmup_steps=0, solve_interval=1
     )
     cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=10)
     chained_sched = ChainedMaxPScheduler(maxp_sched, [cosine_sched])
@@ -396,7 +396,7 @@ def test_chained_scheduler_validates_optimizer():
     groups1 = create_param_groups(model, lr_prefactor=0.1, cl=cl)
     opt1 = torch.optim.AdamW(groups1)
     maxp_sched = MaxPScheduler(
-        opt1, model, al=al, bl=bl, lr_prefactor=0.1, warmup_steps=0, solve_interval=1
+        opt1, model, al=al, bl=bl, lr_prefactor=0.1, solver_warmup_steps=0, solve_interval=1
     )
     
     # Create scheduler with different optimizer
@@ -410,3 +410,407 @@ def test_chained_scheduler_validates_optimizer():
         assert False, "Should have raised ValueError"
     except ValueError as e:
         assert "different optimizer" in str(e)
+
+
+# =============================================================================
+# WSD (Warmup-Stable-Decay) Tests
+# =============================================================================
+
+
+def test_wsd_disabled_by_default():
+    """Test that WSD is disabled by default (decay_type='none')."""
+    torch.manual_seed(0)
+    model = SmallMLP()
+    al = [0.0, 0.5, 0.5]
+    bl = [0.0, 0.0, 0.0]
+    cl = [0.0, 0.5, 0.5]
+
+    groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
+    opt = torch.optim.AdamW(groups)
+    sched = MaxPScheduler(
+        opt, model, al=al, bl=bl, lr_prefactor=0.1, solver_warmup_steps=0, solve_interval=1
+    )
+
+    X = torch.randn(16, 4)
+    sched.capture_initial(X)
+
+    # Run several steps - LRs should not be affected by WSD
+    for _ in range(10):
+        opt.zero_grad()
+        model(X).sum().backward()
+        opt.step()
+        sched.step(X)
+    
+    # Should have valid LRs
+    lrs = sched.get_last_lr()
+    assert all(lr > 0 for lr in lrs)
+
+
+def test_wsd_warmup_linear_ramp():
+    """Test that WSD warmup linearly ramps LR from wsd_min_factor to 1.0."""
+    torch.manual_seed(0)
+    model = SmallMLP()
+    al = [0.0, 0.5, 0.5]
+    bl = [0.0, 0.0, 0.0]
+    cl = [0.0, 0.5, 0.5]
+
+    groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
+    opt = torch.optim.AdamW(groups)
+    
+    # WSD warmup only (no decay)
+    sched = MaxPScheduler(
+        opt, model, al=al, bl=bl, lr_prefactor=0.1,
+        solver_warmup_steps=0, solve_interval=100,  # High interval to avoid LP solve
+        wsd_warmup_steps=5,
+        wsd_min_factor=0.1,
+        wsd_decay_type="none",  # No decay, just warmup
+    )
+
+    X = torch.randn(16, 4)
+    sched.capture_initial(X)
+    
+    lr_history = []
+    
+    for step in range(5):
+        opt.zero_grad()
+        model(X).sum().backward()
+        opt.step()
+        sched.step(X)
+        lr_history.append(sched.get_last_lr()[0])
+    
+    # LR should increase during warmup (step 1 to 5)
+    # Step 1: multiplier = 0.1 + 0.9 * (1/5) = 0.28
+    # Step 5: multiplier = 0.1 + 0.9 * (5/5) = 1.0
+    assert lr_history[-1] > lr_history[0], "Final warmup LR should be higher than initial"
+    
+    # Check monotonic increase during warmup
+    for i in range(len(lr_history) - 1):
+        assert lr_history[i] <= lr_history[i + 1], f"LR should increase during warmup: step {i}"
+
+
+def test_wsd_warmup_independent_of_solver_warmup():
+    """Test that WSD warmup and solver warmup are independent."""
+    torch.manual_seed(0)
+    model = SmallMLP()
+    al = [0.0, 0.5, 0.5]
+    bl = [0.0, 0.0, 0.0]
+    cl = [0.0, 0.5, 0.5]
+
+    groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
+    opt = torch.optim.AdamW(groups)
+    
+    # WSD warmup: 10 steps, solver warmup: 5 steps
+    sched = MaxPScheduler(
+        opt, model, al=al, bl=bl, lr_prefactor=0.1,
+        solver_warmup_steps=5,
+        solve_interval=1,
+        wsd_warmup_steps=10,
+        wsd_min_factor=0.1,
+        wsd_decay_type="none",
+    )
+
+    X = torch.randn(16, 4)
+    sched.capture_initial(X)
+    
+    # During first 5 steps: solver warmup active, WSD warmup active
+    # During steps 6-10: solver active, WSD warmup still active
+    # After step 10: both complete
+    
+    lr_history = []
+    for _ in range(12):
+        opt.zero_grad()
+        model(X).sum().backward()
+        opt.step()
+        sched.step(X)
+        lr_history.append(sched.get_last_lr()[0])
+    
+    # LRs should generally increase during warmup (0-10)
+    # and stabilize after
+    assert lr_history[9] > lr_history[0], "LR should increase during WSD warmup"
+
+
+def test_wsd_decay_validation():
+    """Test that decay requires stable_steps and decay_steps."""
+    torch.manual_seed(0)
+    model = SmallMLP()
+    al = [0.0, 0.5, 0.5]
+    bl = [0.0, 0.0, 0.0]
+    cl = [0.0, 0.5, 0.5]
+
+    groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
+    opt = torch.optim.AdamW(groups)
+    
+    # Should raise error: decay enabled but no stable_steps
+    try:
+        MaxPScheduler(
+            opt, model, al=al, bl=bl, lr_prefactor=0.1,
+            wsd_decay_type="cosine",
+            wsd_stable_steps=None,
+            wsd_decay_steps=10,
+        )
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "wsd_stable_steps" in str(e)
+    
+    # Should raise error: decay enabled but no decay_steps
+    groups2 = create_param_groups(model, lr_prefactor=0.1, cl=cl)
+    opt2 = torch.optim.AdamW(groups2)
+    try:
+        MaxPScheduler(
+            opt2, model, al=al, bl=bl, lr_prefactor=0.1,
+            wsd_decay_type="linear",
+            wsd_stable_steps=10,
+            wsd_decay_steps=None,
+        )
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "wsd_decay_steps" in str(e)
+
+
+def test_wsd_cosine_decay():
+    """Test WSD with cosine decay."""
+    torch.manual_seed(0)
+    model = SmallMLP()
+    al = [0.0, 0.5, 0.5]
+    bl = [0.0, 0.0, 0.0]
+    cl = [0.0, 0.5, 0.5]
+
+    groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
+    opt = torch.optim.AdamW(groups)
+    
+    sched = MaxPScheduler(
+        opt, model, al=al, bl=bl, lr_prefactor=0.1,
+        solver_warmup_steps=0,
+        solve_interval=1,
+        wsd_warmup_steps=0,
+        wsd_stable_steps=5,
+        wsd_decay_steps=5,
+        wsd_decay_type="cosine",
+        wsd_min_factor=0.0,
+    )
+
+    X = torch.randn(16, 4)
+    sched.capture_initial(X)
+    
+    lr_history = []
+    for _ in range(12):
+        opt.zero_grad()
+        model(X).sum().backward()
+        opt.step()
+        sched.step(X)
+        lr_history.append(sched.get_last_lr()[0])
+    
+    # Steps 1-5: stable (full LR)
+    # Steps 6-10: decay (decreasing LR)
+    # Steps 11+: minimum LR
+    
+    # Decay should decrease LRs
+    assert lr_history[5] > lr_history[9], "Cosine decay should reduce LR"
+    
+    # Final LR should be at or near minimum
+    assert lr_history[-1] < lr_history[4], "Final LR should be lower than stable phase"
+
+
+def test_wsd_linear_decay():
+    """Test WSD with linear decay."""
+    torch.manual_seed(0)
+    model = SmallMLP()
+    al = [0.0, 0.5, 0.5]
+    bl = [0.0, 0.0, 0.0]
+    cl = [0.0, 0.5, 0.5]
+
+    groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
+    opt = torch.optim.AdamW(groups)
+    
+    sched = MaxPScheduler(
+        opt, model, al=al, bl=bl, lr_prefactor=0.1,
+        solver_warmup_steps=0,
+        solve_interval=1,
+        wsd_warmup_steps=0,
+        wsd_stable_steps=5,
+        wsd_decay_steps=5,
+        wsd_decay_type="linear",
+        wsd_min_factor=0.0,
+    )
+
+    X = torch.randn(16, 4)
+    sched.capture_initial(X)
+    
+    lr_history = []
+    for _ in range(12):
+        opt.zero_grad()
+        model(X).sum().backward()
+        opt.step()
+        sched.step(X)
+        lr_history.append(sched.get_last_lr()[0])
+    
+    # Linear decay should decrease LRs
+    assert lr_history[5] > lr_history[9], "Linear decay should reduce LR"
+    
+    # Final LR should be at minimum
+    assert lr_history[-1] < lr_history[4], "Final LR should be lower than stable phase"
+
+
+def test_wsd_decay_freezes_lrs():
+    """Test that during decay phase, per-layer LRs are frozen (solver stops)."""
+    torch.manual_seed(0)
+    model = SmallMLP()
+    al = [0.0, 0.5, 0.5]
+    bl = [0.0, 0.0, 0.0]
+    cl = [0.0, 0.5, 0.5]
+
+    groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
+    opt = torch.optim.AdamW(groups)
+    
+    sched = MaxPScheduler(
+        opt, model, al=al, bl=bl, lr_prefactor=0.1,
+        solver_warmup_steps=0,
+        solve_interval=1,
+        wsd_warmup_steps=0,
+        wsd_stable_steps=5,
+        wsd_decay_steps=5,
+        wsd_decay_type="cosine",
+        wsd_min_factor=0.1,
+    )
+
+    X = torch.randn(16, 4)
+    sched.capture_initial(X)
+    
+    # Run through stable phase
+    for _ in range(5):
+        opt.zero_grad()
+        model(X).sum().backward()
+        opt.step()
+        sched.step(X)
+    
+    # Get LRs at end of stable phase (before decay)
+    stable_lrs = sched.get_last_lr()
+    
+    # Run through decay phase
+    for _ in range(5):
+        opt.zero_grad()
+        model(X).sum().backward()
+        opt.step()
+        sched.step(X)
+    
+    # Verify scheduler is in decay phase
+    assert sched._in_decay_phase, "Scheduler should be in decay phase"
+    assert sched._frozen_lrs is not None, "Frozen LRs should be set"
+    
+    # Frozen LRs should match end-of-stable LRs
+    for frozen, stable in zip(sched._frozen_lrs, stable_lrs):
+        assert abs(frozen - stable) < 1e-9, "Frozen LRs should match stable phase LRs"
+
+
+def test_wsd_full_schedule():
+    """Test complete WSD schedule: warmup -> stable -> decay."""
+    torch.manual_seed(0)
+    model = SmallMLP()
+    al = [0.0, 0.5, 0.5]
+    bl = [0.0, 0.0, 0.0]
+    cl = [0.0, 0.5, 0.5]
+
+    groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
+    opt = torch.optim.AdamW(groups)
+    
+    sched = MaxPScheduler(
+        opt, model, al=al, bl=bl, lr_prefactor=0.1,
+        solver_warmup_steps=2,  # LP solver starts at step 3
+        solve_interval=1,
+        wsd_warmup_steps=5,
+        wsd_stable_steps=5,
+        wsd_decay_steps=5,
+        wsd_decay_type="cosine",
+        wsd_min_factor=0.1,
+    )
+
+    X = torch.randn(16, 4)
+    sched.capture_initial(X)
+    
+    lr_history = []
+    for _ in range(18):
+        opt.zero_grad()
+        model(X).sum().backward()
+        opt.step()
+        sched.step(X)
+        lr_history.append(sched.get_last_lr()[0])
+    
+    # Steps 1-5: warmup (LR increases)
+    assert lr_history[4] > lr_history[0], "LR should increase during warmup"
+    
+    # Steps 6-10: stable (LR ~ constant, may vary due to LP solver)
+    # Steps 11-15: decay (LR decreases)
+    assert lr_history[9] > lr_history[14], "LR should decrease during decay"
+    
+    # Final LR should be near minimum
+    # Due to wsd_min_factor=0.1, final LR should be ~10% of stable LR
+    assert lr_history[-1] < lr_history[5], "Final LR should be lower than stable"
+
+
+def test_wsd_state_dict_roundtrip():
+    """Test that WSD state is properly saved and restored."""
+    torch.manual_seed(0)
+    model = SmallMLP()
+    al = [0.0, 0.5, 0.5]
+    bl = [0.0, 0.0, 0.0]
+    cl = [0.0, 0.5, 0.5]
+
+    groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
+    opt = torch.optim.AdamW(groups)
+    
+    sched = MaxPScheduler(
+        opt, model, al=al, bl=bl, lr_prefactor=0.1,
+        solver_warmup_steps=0,
+        solve_interval=1,
+        wsd_warmup_steps=3,
+        wsd_stable_steps=5,
+        wsd_decay_steps=5,
+        wsd_decay_type="cosine",
+        wsd_min_factor=0.1,
+    )
+
+    X = torch.randn(16, 4)
+    sched.capture_initial(X)
+    
+    # Run into decay phase
+    for _ in range(10):
+        opt.zero_grad()
+        model(X).sum().backward()
+        opt.step()
+        sched.step(X)
+    
+    # Save state
+    state = sched.state_dict()
+    lrs_before = sched.get_last_lr()
+    
+    # Verify state contains WSD info
+    assert "frozen_lrs" in state
+    assert "in_decay_phase" in state
+    
+    # Create new scheduler and restore
+    torch.manual_seed(0)
+    model2 = SmallMLP()
+    groups2 = create_param_groups(model2, lr_prefactor=0.1, cl=cl)
+    opt2 = torch.optim.AdamW(groups2)
+    
+    sched2 = MaxPScheduler(
+        opt2, model2, al=al, bl=bl, lr_prefactor=0.1,
+        solver_warmup_steps=0,
+        solve_interval=1,
+        wsd_warmup_steps=3,
+        wsd_stable_steps=5,
+        wsd_decay_steps=5,
+        wsd_decay_type="cosine",
+        wsd_min_factor=0.1,
+    )
+    
+    X2 = torch.randn(16, 4)
+    sched2.capture_initial(X2)
+    sched2.load_state_dict(state)
+    
+    # Verify state restored
+    assert sched2._in_decay_phase == sched._in_decay_phase
+    if sched._frozen_lrs:
+        assert sched2._frozen_lrs is not None
+        for lr1, lr2 in zip(sched._frozen_lrs, sched2._frozen_lrs):
+            assert abs(lr1 - lr2) < 1e-9

@@ -287,7 +287,7 @@ def train(config: dict) -> None:
             parametrization=parametrization,
             alignment_assumption=alignment,
             lr_prefactor=lr_prefactor,
-            warmup_steps=config["maxp"]["warmup_steps"],
+            solver_warmup_steps=config["maxp"]["warmup_steps"],
             solve_interval=config["maxp"]["solve_interval"],
             alignment_norm=config["maxp"]["alignment_norm"],
         )
