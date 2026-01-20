@@ -11,8 +11,9 @@ from maxp.tracer import Tracer, LayerSnapshot, StepTrace, TraceWindow
 from maxp.alignment import compute_alignment
 from maxp.solver import find_c, find_c_adam, find_c_sgd
 from maxp.utils import (
-    ABCParametrization, ScaledLinear, 
-    create_param_groups, get_abc_parametrization, get_linear_layers, initialize_abc_weights
+    ABCParametrization, LayerInfo, ScaledLinear, SemanticRole,
+    create_param_groups, get_abc_parametrization, get_semantic_roles,
+    get_managed_layers, initialize_abc_weights
 )
 
 __version__ = "0.1.0"
@@ -29,9 +30,12 @@ __all__ = [
     "find_c_adam",
     "find_c_sgd",
     "ABCParametrization",
+    "LayerInfo",
     "ScaledLinear",
+    "SemanticRole",
     "create_param_groups",
     "get_abc_parametrization",
-    "get_linear_layers",
+    "get_semantic_roles",
+    "get_managed_layers",
     "initialize_abc_weights",
 ]

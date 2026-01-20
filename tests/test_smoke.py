@@ -40,11 +40,11 @@ def test_smoke_tiny_training_loop_no_crash_and_lr_updates_after_warmup():
 
     model = TinyNet()
 
-    # Choose (a,b) so solver's stability-at-init conditions are satisfied:
-    # a0+b0=0, a1+b1=0.5, a2+b2>=0.5
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
-    cl = [0.0, 0.5, 0.5]
+    # For TinyNet with 3 LINEAR layers (no LayerNorm):
+    # - l1 and l2 are HIDDEN, l3 is READOUT
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
+    cl = [0.5, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
     opt = torch.optim.AdamW(groups)
@@ -98,9 +98,16 @@ def test_smoke_model_with_layernorm_and_biases():
 
     model = TinyNetWithNorm()
 
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
-    cl = [0.0, 0.5, 0.5]
+    # For TinyNetWithNorm: l1, ln.weight, l2, l3 are managed entries.
+    # Semantic roles (with LayerNorm as EMBEDDING):
+    #   l1 -> HIDDEN (has_embedding_layer=True, so first LINEAR is HIDDEN)
+    #   ln.weight -> EMBEDDING
+    #   l2 -> HIDDEN
+    #   l3 -> READOUT
+    # Using muP-adam-full values:
+    al = [0.0, -0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5, 0.5]
+    cl = [1.0, 0.5, 1.0, 0.5]
 
     other_lr = 0.01
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl, other_lr=other_lr)
@@ -114,7 +121,9 @@ def test_smoke_model_with_layernorm_and_biases():
     # Verify we have 3 managed groups + 1 other group
     managed_groups = [g for g in opt.param_groups if g.get("maxp_managed", False)]
     other_groups = [g for g in opt.param_groups if not g.get("maxp_managed", False)]
-    assert len(managed_groups) == 3
+
+    # l1, ln.weight, l2, l3 are now managed
+    assert len(managed_groups) == 4
     assert len(other_groups) == 1
     assert other_groups[0]["lr"] == other_lr
 

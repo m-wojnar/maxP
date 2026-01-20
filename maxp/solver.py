@@ -8,6 +8,8 @@ while maintaining stability constraints based on alignment measurements.
 import numpy as np
 import pulp as plp
 
+from maxp.utils import SemanticRole
+
 
 def _min2_lp(lp: plp.LpProblem, a, b, M: float, var_id: list[int]):
     """
@@ -44,12 +46,45 @@ def _min_lp(lp: plp.LpProblem, *args, M: float, var_id: list[int]):
     return X
 
 
+def _validate_stability_at_init(
+    al: list[float], bl: list[float], semantic_roles: list[SemanticRole]
+) -> None:
+    """
+    Validate stability-at-initialization conditions based on semantic roles.
+    
+    - EMBEDDING: al + bl must equal 0.0
+    - HIDDEN: al + bl must equal 0.5
+    - READOUT: al + bl must be >= 0.5
+    """
+    for i, role in enumerate(semantic_roles):
+        ab_sum = al[i] + bl[i]
+        if role == SemanticRole.EMBEDDING:
+            if not np.isclose(ab_sum, 0.0):
+                raise ValueError(
+                    f"Invalid (a,b) for layer {i} (EMBEDDING role): "
+                    f"al[{i}] + bl[{i}] = {ab_sum}, must equal 0.0 for stability at initialization."
+                )
+        elif role == SemanticRole.HIDDEN:
+            if not np.isclose(ab_sum, 0.5):
+                raise ValueError(
+                    f"Invalid (a,b) for layer {i} (HIDDEN role): "
+                    f"al[{i}] + bl[{i}] = {ab_sum}, must equal 0.5 for stability at initialization."
+                )
+        elif role == SemanticRole.READOUT:
+            if ab_sum < 0.5 - 1e-12:
+                raise ValueError(
+                    f"Invalid (a,b) for layer {i} (READOUT role): "
+                    f"al[{i}] + bl[{i}] = {ab_sum}, must be >= 0.5 for stability at initialization."
+                )
+
+
 def find_c_adam(
     al: list[float],
     bl: list[float],
     alpha: list[float],
     omega: list[float],
     u: list[float],
+    semantic_roles: list[SemanticRole],
     solver: plp.LpSolver | None = None,
     feature_learning: bool = False,
     M: float = 10.0,
@@ -60,15 +95,22 @@ def find_c_adam(
     Solves an LP to minimize sum(c_l) (maximize learning rates) subject to
     stability constraints derived from alignment measurements.
     
+    Constraints are applied based on semantic roles:
+    - EMBEDDING: Simple stability bound (no alignment terms, like first layer)
+    - HIDDEN: Three alignment-based constraints (like middle layers)
+    - READOUT: Output layer constraints with bl term (like last layer)
+    
     Args:
         al: List of a_l exponents (layer multipliers).
         bl: List of b_l exponents (initialization variance).
         alpha: List of alpha alignment values (z_0 @ Δw term).
         omega: List of omega alignment values (Δz @ w_0 term).
         u: List of u alignment values (Δz @ Δw term).
+        semantic_roles: List of SemanticRole for each layer.
         solver: PuLP solver instance. If None, uses CBC solver.
             Examples: pulp.PULP_CBC_CMD(), pulp.CPLEX_CMD(), pulp.GLPK_CMD().
-        feature_learning: If True, enforce feature learning constraint (r_{L-1} = 0).
+        feature_learning: If True, enforce feature learning constraint 
+            (r = 0 for last HIDDEN layer before READOUT).
         M: Big-M constant for min/max encoding. Default: 10.0.
     
     Returns:
@@ -77,23 +119,14 @@ def find_c_adam(
             - rl: List of r_l values (stability residuals)
     
     Raises:
-        ValueError if (a,b) violate stability-at-initialization.
+        ValueError if (a,b) violate stability-at-initialization for any role.
         ValueError if LP is infeasible.
     """
-
-    assert len(al) == len(bl) == len(alpha) == len(omega) == len(u)
+    assert len(al) == len(bl) == len(alpha) == len(omega) == len(u) == len(semantic_roles)
     n = len(al)
 
-    # Validate stability-at-initialization conditions for provided (a,b).
-    # These are not LP decision variables here; encoding them as LP constraints
-    # would evaluate to Python booleans and break PuLP.
-    if not np.isclose(al[0] + bl[0], 0.0):
-        raise ValueError("Invalid (a,b): al[0] + bl[0] must equal 0.0 for stability at initialization.")
-    for i in range(1, n - 1):
-        if not np.isclose(al[i] + bl[i], 0.5):
-            raise ValueError("Invalid (a,b): al[i] + bl[i] must equal 0.5 for stability at initialization.")
-    if al[n - 1] + bl[n - 1] < 0.5 - 1e-12:
-        raise ValueError("Invalid (a,b): al[n-1] + bl[n-1] must be at least 0.5 for stability at initialization.")
+    # Validate stability-at-initialization conditions by semantic role
+    _validate_stability_at_init(al, bl, semantic_roles)
     
     if solver is None:
         solver = plp.PULP_CBC_CMD(msg=False)
@@ -107,36 +140,73 @@ def find_c_adam(
     lp.c = c
     lp.r = r
     
-    # Stable activations during training (first layer)
-    lp += r[0] == al[0] + c[0]
-    lp += r[0] >= 0
+    # Find the readout layer index (should be exactly one)
+    readout_idx = None
+    for i, role in enumerate(semantic_roles):
+        if role == SemanticRole.READOUT:
+            readout_idx = i
+            break
     
-    # Hidden layers
-    for i in range(1, n - 1):
-        x1 = plp.LpVariable(f"min_x1_{i}")
-        x2 = plp.LpVariable(f"min_x2_{i}")
-        x3 = plp.LpVariable(f"min_x3_{i}")
-        
-        lp += x1 == al[i] + c[i] - alpha[i]
-        lp += x2 == al[i] + c[i] + r[i - 1] - u[i]
-        lp += x3 == 0.5 + r[i - 1] - omega[i]
-        lp += r[i] == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
-        lp += r[i] >= 0
+    if readout_idx is None:
+        raise ValueError("No READOUT layer found in semantic_roles")
     
-    # Output layer (stable logits)
-    x1 = plp.LpVariable(f"min_x1_{n - 1}")
-    x2 = plp.LpVariable(f"min_x2_{n - 1}")
-    x3 = plp.LpVariable(f"min_x3_{n - 1}")
+    # Apply constraints based on semantic role
+    for i, role in enumerate(semantic_roles):
+        if role == SemanticRole.EMBEDDING:
+            # EMBEDDING: simple stability bound (no alignment terms)
+            # Same as old "first layer" constraint
+            lp += r[i] == al[i] + c[i]
+            lp += r[i] >= 0
+            
+        elif role == SemanticRole.HIDDEN:
+            # HIDDEN: three competing constraints based on alignment
+            # Same as old "hidden layer" constraints
+            x1 = plp.LpVariable(f"min_x1_{i}")
+            x2 = plp.LpVariable(f"min_x2_{i}")
+            x3 = plp.LpVariable(f"min_x3_{i}")
+            
+            # Find the previous layer's r (or use 0 if this is first)
+            if i == 0:
+                r_prev = 0
+            else:
+                r_prev = r[i - 1]
+            
+            lp += x1 == al[i] + c[i] - alpha[i]
+            lp += x2 == al[i] + c[i] + r_prev - u[i]
+            lp += x3 == 0.5 + r_prev - omega[i]
+            lp += r[i] == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
+            lp += r[i] >= 0
+            
+        elif role == SemanticRole.READOUT:
+            # READOUT: output layer constraints with bl term
+            # Same as old "last layer" constraints
+            x1 = plp.LpVariable(f"min_x1_{i}")
+            x2 = plp.LpVariable(f"min_x2_{i}")
+            x3 = plp.LpVariable(f"min_x3_{i}")
+            
+            # Find the previous layer's r
+            if i == 0:
+                r_prev = 0
+            else:
+                r_prev = r[i - 1]
+            
+            lp += x1 == al[i] + bl[i] + r_prev - omega[i]
+            lp += x2 == al[i] + c[i] - alpha[i]
+            lp += x3 == al[i] + c[i] + r_prev - u[i]
+            lp += r[i] == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
+            lp += r[i] >= 0
     
-    lp += x1 == al[n - 1] + bl[n - 1] + r[n - 2] - omega[n - 1]
-    lp += x2 == al[n - 1] + c[n - 1] - alpha[n - 1]
-    lp += x3 == al[n - 1] + c[n - 1] + r[n - 2] - u[n - 1]
-    lp += r[n - 1] == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
-    lp += r[n - 1] >= 0
-    
-    # Feature learning constraint
+    # Feature learning constraint: force r=0 on last HIDDEN before READOUT
     if feature_learning:
-        lp += r[n - 2] == 0
+        # Find the last HIDDEN layer
+        last_hidden_idx = None
+        for i in range(n - 1, -1, -1):
+            if semantic_roles[i] == SemanticRole.HIDDEN:
+                last_hidden_idx = i
+                break
+        
+        if last_hidden_idx is not None:
+            lp += r[last_hidden_idx] == 0
     
     # Objective: minimize sum of c_l (maximize learning rates)
     lp += plp.lpSum(c)
@@ -156,6 +226,7 @@ def find_c_sgd(
     alpha: list[float],
     omega: list[float],
     u: list[float],
+    semantic_roles: list[SemanticRole],
     solver: plp.LpSolver | None = None,
     feature_learning: bool = False,
     M: float = 10.0,
@@ -166,12 +237,18 @@ def find_c_sgd(
     Similar to find_c_adam but with different constraint formulation
     accounting for SGD's gradient scaling behavior.
     
+    Constraints are applied based on semantic roles:
+    - EMBEDDING: Simple stability bound with gradient scaling
+    - HIDDEN: Three alignment-based constraints with gradient scaling
+    - READOUT: Output layer constraints
+    
     Args:
         al: List of a_l exponents (layer multipliers).
         bl: List of b_l exponents (initialization variance).
         alpha: List of alpha alignment values.
         omega: List of omega alignment values.
         u: List of u alignment values.
+        semantic_roles: List of SemanticRole for each layer.
         solver: PuLP solver instance. If None, uses CBC solver.
         feature_learning: If True, enforce feature learning constraint.
         M: Big-M constant for min/max encoding.
@@ -182,21 +259,14 @@ def find_c_sgd(
             - rl: List of r_l values
 
     Raises:
-        ValueError if (a,b) violate stability-at-initialization.
+        ValueError if (a,b) violate stability-at-initialization for any role.
         ValueError if LP is infeasible.
     """
-
-    assert len(al) == len(bl) == len(alpha) == len(omega) == len(u)
+    assert len(al) == len(bl) == len(alpha) == len(omega) == len(u) == len(semantic_roles)
     n = len(al)
 
-    # Validate stability-at-initialization conditions for provided (a,b).
-    if not np.isclose(al[0] + bl[0], 0.0):
-        raise ValueError("Invalid (a,b): al[0] + bl[0] must equal 0.0 for stability at initialization.")
-    for i in range(1, n - 1):
-        if not np.isclose(al[i] + bl[i], 0.5):
-            raise ValueError("Invalid (a,b): al[i] + bl[i] must equal 0.5 for stability at initialization.")
-    if (al[n - 1] + bl[n - 1]) < 0.5 - 1e-12:
-        raise ValueError("Invalid (a,b): al[n-1] + bl[n-1] must be at least 0.5 for stability at initialization.")
+    # Validate stability-at-initialization conditions by semantic role
+    _validate_stability_at_init(al, bl, semantic_roles)
     
     if solver is None:
         solver = plp.PULP_CBC_CMD(msg=False)
@@ -206,44 +276,81 @@ def find_c_sgd(
     lp = plp.LpProblem("maxp_sgd", plp.LpMinimize)
     c = plp.LpVariable.dicts("c", range(n))
     r = plp.LpVariable.dicts("r", range(n))
-    g = plp.LpVariable.dicts("g", range(n - 1))
     lp.c = c
     lp.r = r
     
-    # Gradient scaling terms
-    for i in range(n - 1):
-        lp += g[i] == _min_lp(lp, al[n - 1] + bl[n - 1], 2 * al[n - 1] + c[n - 1], M=M, var_id=var_id) + al[i]
+    # Find the readout layer index
+    readout_idx = None
+    for i, role in enumerate(semantic_roles):
+        if role == SemanticRole.READOUT:
+            readout_idx = i
+            break
     
-    # First layer
-    lp += r[0] == g[0] + al[0] + c[0]
-    lp += r[0] >= 0
+    if readout_idx is None:
+        raise ValueError("No READOUT layer found in semantic_roles")
     
-    # Hidden layers
-    for i in range(1, n - 1):
-        x1 = plp.LpVariable(f"min_x1_{i}")
-        x2 = plp.LpVariable(f"min_x2_{i}")
-        x3 = plp.LpVariable(f"min_x3_{i}")
-        
-        lp += x1 == g[i] + al[i] + c[i] - alpha[i]
-        lp += x2 == g[i] + al[i] + c[i] + r[i - 1] - u[i]
-        lp += x3 == 0.5 + r[i - 1] - omega[i]
-        lp += r[i] == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
-        lp += r[i] >= 0
+    # Gradient scaling terms (depend on readout layer)
+    # g[i] for non-readout layers
+    g = {}
+    for i, role in enumerate(semantic_roles):
+        if role != SemanticRole.READOUT:
+            g[i] = plp.LpVariable(f"g_{i}")
+            lp += g[i] == _min_lp(
+                lp, al[readout_idx] + bl[readout_idx], 2 * al[readout_idx] + c[readout_idx], 
+                M=M, var_id=var_id
+            ) + al[i]
     
-    # Output layer
-    x1 = plp.LpVariable(f"min_x1_{n - 1}")
-    x2 = plp.LpVariable(f"min_x2_{n - 1}")
-    x3 = plp.LpVariable(f"min_x3_{n - 1}")
+    # Apply constraints based on semantic role
+    for i, role in enumerate(semantic_roles):
+        if role == SemanticRole.EMBEDDING:
+            # EMBEDDING: simple stability bound with gradient scaling
+            lp += r[i] == g[i] + al[i] + c[i]
+            lp += r[i] >= 0
+            
+        elif role == SemanticRole.HIDDEN:
+            # HIDDEN: three competing constraints with gradient scaling
+            x1 = plp.LpVariable(f"min_x1_{i}")
+            x2 = plp.LpVariable(f"min_x2_{i}")
+            x3 = plp.LpVariable(f"min_x3_{i}")
+            
+            if i == 0:
+                r_prev = 0
+            else:
+                r_prev = r[i - 1]
+            
+            lp += x1 == g[i] + al[i] + c[i] - alpha[i]
+            lp += x2 == g[i] + al[i] + c[i] + r_prev - u[i]
+            lp += x3 == 0.5 + r_prev - omega[i]
+            lp += r[i] == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
+            lp += r[i] >= 0
+            
+        elif role == SemanticRole.READOUT:
+            # READOUT: output layer constraints (no gradient scaling term)
+            x1 = plp.LpVariable(f"min_x1_{i}")
+            x2 = plp.LpVariable(f"min_x2_{i}")
+            x3 = plp.LpVariable(f"min_x3_{i}")
+            
+            if i == 0:
+                r_prev = 0
+            else:
+                r_prev = r[i - 1]
+            
+            lp += x1 == al[i] + bl[i] + r_prev - omega[i]
+            lp += x2 == 2 * al[i] + c[i] - alpha[i]
+            lp += x3 == 2 * al[i] + c[i] + r_prev - u[i]
+            lp += r[i] == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
+            lp += r[i] >= 0
     
-    lp += x1 == al[n - 1] + bl[n - 1] + r[n - 2] - omega[n - 1]
-    lp += x2 == 2 * al[n - 1] + c[n - 1] - alpha[n - 1]
-    lp += x3 == 2 * al[n - 1] + c[n - 1] + r[n - 2] - u[n - 1]
-    lp += r[n - 1] == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
-    lp += r[n - 1] >= 0
-    
-    # Feature learning constraint
+    # Feature learning constraint: force r=0 on last HIDDEN before READOUT
     if feature_learning:
-        lp += r[n - 2] == 0
+        last_hidden_idx = None
+        for i in range(n - 1, -1, -1):
+            if semantic_roles[i] == SemanticRole.HIDDEN:
+                last_hidden_idx = i
+                break
+        
+        if last_hidden_idx is not None:
+            lp += r[last_hidden_idx] == 0
     
     # Objective: minimize sum of c_l (maximize learning rates)
     lp += plp.lpSum(c)
@@ -263,6 +370,7 @@ def find_c(
     alpha: list[float],
     omega: list[float],
     u: list[float],
+    semantic_roles: list[SemanticRole],
     optimizer_type: str = "adam",
     solver: plp.LpSolver | None = None,
     feature_learning: bool = False,
@@ -280,6 +388,7 @@ def find_c(
         alpha: List of alpha alignment values.
         omega: List of omega alignment values.
         u: List of u alignment values.
+        semantic_roles: List of SemanticRole for each layer.
         optimizer_type: Either "adam" or "sgd".
         solver: PuLP solver instance.
         feature_learning: If True, enforce feature learning constraint.
@@ -290,13 +399,13 @@ def find_c(
     
     Raises:
         ValueError if optimizer_type is not "adam" or "sgd".
-        ValueError if (a,b) violate stability-at-initialization.
+        ValueError if (a,b) violate stability-at-initialization for any role.
         ValueError if LP is infeasible.
     """
 
     if optimizer_type.lower() == "adam":
-        return find_c_adam(al, bl, alpha, omega, u, solver, feature_learning, M)
+        return find_c_adam(al, bl, alpha, omega, u, semantic_roles, solver, feature_learning, M)
     elif optimizer_type.lower() == "sgd":
-        return find_c_sgd(al, bl, alpha, omega, u, solver, feature_learning, M)
+        return find_c_sgd(al, bl, alpha, omega, u, semantic_roles, solver, feature_learning, M)
     else:
         raise ValueError(f"Unknown optimizer_type: {optimizer_type}. Must be 'adam' or 'sgd'.")

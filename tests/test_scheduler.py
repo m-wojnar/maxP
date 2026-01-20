@@ -21,8 +21,8 @@ class SmallMLP(nn.Module):
 def test_scheduler_warmup_keeps_lrs_constant():
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -49,8 +49,8 @@ def test_scheduler_warmup_keeps_lrs_constant():
 def test_scheduler_solve_interval_caches_lrs():
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -88,10 +88,10 @@ def test_scheduler_solve_interval_caches_lrs():
 def test_scheduler_resample_w0_runs():
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
+    al = [-0.5, 0.0, 0.5]
     # Must satisfy stability-at-init constraints used by the LP solver:
     # a0+b0=0, a1+b1=0.5, a2+b2>=0.5
-    bl = [0.0, 0.0, 0.0]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -124,8 +124,8 @@ def test_chained_scheduler_applies_cosine_decay():
     """Verify that chained cosine scheduler applies decay to learning rates."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -160,8 +160,8 @@ def test_chained_scheduler_preserves_layer_ratios():
     """Verify that decay is applied via lr_prefactor, preserving per-layer LR ratios from MaxP."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -206,8 +206,8 @@ def test_chained_scheduler_multiple_schedulers():
     """Test chaining multiple schedulers (warmup + cosine)."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -244,8 +244,8 @@ def test_chained_scheduler_state_dict_roundtrip():
     """Test that state_dict/load_state_dict correctly saves and restores state."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -298,8 +298,8 @@ def test_chained_scheduler_empty_list():
     """Test that empty scheduler list behaves identically to plain MaxPScheduler."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     # Create two identical setups
@@ -345,8 +345,8 @@ def test_chained_scheduler_delegation_methods():
     """Test that delegation methods work correctly."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -389,8 +389,8 @@ def test_chained_scheduler_validates_optimizer():
     """Test that ChainedMaxPScheduler validates optimizer consistency."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups1 = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -421,8 +421,8 @@ def test_wsd_disabled_by_default():
     """Test that WSD is disabled by default (decay_type='none')."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -450,8 +450,8 @@ def test_wsd_warmup_linear_ramp():
     """Test that WSD warmup linearly ramps LR from wsd_min_factor to 1.0."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -492,8 +492,8 @@ def test_wsd_warmup_independent_of_solver_warmup():
     """Test that WSD warmup and solver warmup are independent."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -533,8 +533,8 @@ def test_wsd_decay_validation():
     """Test that decay requires stable_steps and decay_steps."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -571,8 +571,8 @@ def test_wsd_cosine_decay():
     """Test WSD with cosine decay."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -615,8 +615,8 @@ def test_wsd_linear_decay():
     """Test WSD with linear decay."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -655,8 +655,8 @@ def test_wsd_decay_freezes_lrs():
     """Test that during decay phase, per-layer LRs are frozen (solver stops)."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -706,8 +706,8 @@ def test_wsd_full_schedule():
     """Test complete WSD schedule: warmup -> stable -> decay."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -751,8 +751,8 @@ def test_wsd_state_dict_roundtrip():
     """Test that WSD state is properly saved and restored."""
     torch.manual_seed(0)
     model = SmallMLP()
-    al = [0.0, 0.5, 0.5]
-    bl = [0.0, 0.0, 0.0]
+    al = [-0.5, 0.0, 0.5]
+    bl = [0.5, 0.5, 0.5]
     cl = [0.0, 0.5, 0.5]
 
     groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)

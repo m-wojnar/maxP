@@ -15,20 +15,22 @@ import torch.optim
 from maxp.tracer import Tracer
 from maxp.alignment import compute_alignment
 from maxp.solver import find_c
-from maxp.utils import AlignmentType, ParametrizationType, get_abc_parametrization, get_linear_layers
+from maxp.utils import (
+    AlignmentType, ParametrizationType, SemanticRole,
+    get_abc_parametrization, get_managed_layers, get_semantic_roles,
+)
 
 
 class MaxPScheduler:
     """
     Maximal muP parametrization learning rate scheduler.
     
-    Dynamically adjusts per-layer learning rates for nn.Linear weights based on
-    alignment measurements between initial and current weights/activations.
+    Dynamically adjusts per-layer learning rates for all managed layers
+    based on alignment measurements between initial and current weights/activations.
     Uses LP solver to find optimal learning rate exponents that maximize
     training speed while maintaining stability.
     
-    Other parameters (LayerNorm, Attention, etc.) are not adjusted;
-    their learning rates remain constant throughout training.
+    Other parameters are not adjusted; their learning rates remain constant throughout training.
     
     The scheduler must be used with an optimizer whose param groups were created
     by `create_param_groups()`. Groups with "maxp_managed": True are adjusted;
@@ -37,16 +39,18 @@ class MaxPScheduler:
     There are two ways to specify the ABC parametrization:
     
     1. **Named parametrization**: Pass `parametrization="mup"` (or "sp", "ntk", "mfp")
-       and the scheduler will automatically generate appropriate al/bl values.
+       and the scheduler will automatically generate appropriate al/bl values based
+       on semantic roles (EMBEDDING, HIDDEN, READOUT).
        
     2. **Custom values**: Pass explicit `al` and `bl` lists for fine-grained control.
     
     Args:
         optimizer: PyTorch optimizer with param groups from create_param_groups().
         model: PyTorch model being optimized.
-        al: List of a_l exponents (layer multipliers), one per Linear layer.
+        lr_prefactor: Base learning rate multiplier.
+        al: List of a_l exponents (layer multipliers), one per managed layer.
             Required if `parametrization` is not provided.
-        bl: List of b_l exponents (initialization variance), one per Linear layer.
+        bl: List of b_l exponents (initialization variance), one per managed layer.
             Required if `parametrization` is not provided.
         parametrization: Named parametrization type. One of:
             - "mup": Maximal Update Parametrization (μP)
@@ -57,7 +61,6 @@ class MaxPScheduler:
             optimizer type and alignment assumption.
         alignment_assumption: Alignment assumption for named parametrizations.
             One of "full" or "no", used when `parametrization` is provided. Default: "full".
-        lr_prefactor: Base learning rate multiplier.
         solver_warmup_steps: Number of steps before engaging the LP solver.
             During solver warmup, base learning rate remains at its initial value
             (but WSD warmup is still applied). Default: 100.
@@ -90,7 +93,9 @@ class MaxPScheduler:
     
     Example using named parametrization:
         >>> model = MLP(width=128, depth=4)
-        >>> cl = get_abc_parametrization(4, "mup", "adam", "full").cl
+        >>> layers = get_managed_layers(model)
+        >>> roles = get_semantic_roles(layers)
+        >>> cl = get_abc_parametrization(roles, "mup", "adam", "full").cl
         >>> param_groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
         >>> optimizer = torch.optim.AdamW(param_groups)
         >>> scheduler = MaxPScheduler(
@@ -148,16 +153,25 @@ class MaxPScheduler:
         self.lr_prefactor = lr_prefactor
         self.optimizer_type = self._infer_optimizer_type(optimizer)
         
-        # Resolve parametrization
-        n_layers = len(get_linear_layers(model))
+        # Get all managed layers and compute semantic roles
+        layer_infos = get_managed_layers(model)
+        semantic_roles = get_semantic_roles(layer_infos)
+        
+        # Store layer info
+        self._layer_infos = layer_infos
+        self._semantic_roles = semantic_roles
+        
+        # Resolve parametrization for all managed layers
+        n_layers = len(layer_infos)
         self.al, self.bl, self._param_name = self._resolve_parametrization(
             al=al,
             bl=bl,
             parametrization=parametrization,
             alignment_assumption=alignment_assumption,
             optimizer_type=self.optimizer_type,
-            n_layers=n_layers,
+            semantic_roles=semantic_roles,
         )
+        
         self.solver_warmup_steps = solver_warmup_steps
         self.sample_size = sample_size
         self.solve_interval = solve_interval
@@ -181,7 +195,7 @@ class MaxPScheduler:
                     f"wsd_decay_steps must be provided."
                 )
         
-        # Identify which param groups are managed by maxP (Linear weights)
+        # Identify which param groups are managed by maxP
         self._managed_indices: list[int] = []
         self._fan_in: list[int] = []
 
@@ -199,7 +213,7 @@ class MaxPScheduler:
                 f"the optimizer correctly."
             )
         
-        # Create tracer
+        # Create tracer (traces all managed layers)
         self.tracer = Tracer(
             model,
             sample_size=sample_size,
@@ -207,12 +221,11 @@ class MaxPScheduler:
             resample_w0=resample_w0,
         )
         
-        # Verify tracer found same number of layers
-        if len(self.tracer.layer_names) != len(self.al):
+        # Verify tracer found the expected number of layers
+        if len(self.tracer.layer_names) != n_layers:
             raise ValueError(
-                f"Tracer found {len(self.tracer.layer_names)} Linear layers, "
-                f"but al has {len(self.al)} elements. Ensure al/bl have one entry "
-                f"per nn.Linear layer (excluding attention)."
+                f"Tracer found {len(self.tracer.layer_names)} layers, "
+                f"but expected {n_layers}. This is an internal error."
             )
         
         # State
@@ -255,22 +268,29 @@ class MaxPScheduler:
         parametrization: ParametrizationType | None,
         alignment_assumption: AlignmentType,
         optimizer_type: str,
-        n_layers: int,
+        semantic_roles: list[SemanticRole],
     ) -> tuple[list[float], list[float], str | None]:
         """
         Resolve ABC parametrization from explicit values or named parametrization.
         
+        When using named parametrization, al/bl values are generated based on
+        semantic roles (EMBEDDING, HIDDEN, READOUT).
+        
         Returns:
             Tuple of (al, bl, param_name) where param_name is None if custom values used.
         """
+        n_layers = len(semantic_roles)
+        
         if parametrization is not None:
             if al is not None or bl is not None:
                 raise ValueError(
                     "Cannot specify both 'parametrization' and explicit 'al'/'bl' values. "
                     "Use either named parametrization or custom values, not both."
                 )
+            
+            # Use get_abc_parametrization with semantic roles
             abc = get_abc_parametrization(
-                n_layers=n_layers,
+                semantic_roles=semantic_roles,
                 parametrization=parametrization,
                 optimizer=optimizer_type,  # type: ignore
                 alignment=alignment_assumption,
@@ -291,7 +311,7 @@ class MaxPScheduler:
         
         if len(al) != n_layers:
             raise ValueError(
-                f"Length of al/bl ({len(al)}) must match number of Linear layers ({n_layers})"
+                f"Length of al/bl ({len(al)}) must match number of managed layers ({n_layers})"
             )
         
         return list(al), list(bl), None
@@ -429,7 +449,7 @@ class MaxPScheduler:
         self._cached_omega = omega
         self._cached_u = u
         
-        # Solve LP for optimal c_l
+        # Solve LP for optimal c_l using semantic roles
         cl, rl = find_c(
             al=self.al,
             bl=self.bl,
@@ -439,6 +459,7 @@ class MaxPScheduler:
             optimizer_type=self.optimizer_type,
             solver=self.solver,
             feature_learning=self.feature_learning,
+            semantic_roles=self._semantic_roles,
         )
         
         # Check if solve was successful

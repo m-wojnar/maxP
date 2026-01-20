@@ -18,7 +18,7 @@ import torch.nn.functional as F
 import yaml
 from torchvision import datasets, transforms
 
-from maxp import MaxPScheduler, create_param_groups, get_linear_layers, initialize_abc_weights
+from maxp import MaxPScheduler, SemanticRole, create_param_groups, get_managed_layers, initialize_abc_weights
 
 
 class CIFAR10Dataset:
@@ -250,10 +250,13 @@ def train(config: dict) -> None:
         bias=config["model"]["bias"],
     )
     
-    # Count Linear layers for initialization
-    linear_layers = get_linear_layers(model)
-    n_linear = len(linear_layers)
-    print(f"Found {n_linear} Linear layers (excluding attention)")
+    # Count managed layers by semantic role
+    managed_layers = get_managed_layers(model)
+    n_layers = len(managed_layers)
+    n_embedding = sum(1 for l in managed_layers if l.semantic_role == SemanticRole.EMBEDDING)
+    n_hidden = sum(1 for l in managed_layers if l.semantic_role == SemanticRole.HIDDEN)
+    n_readout = sum(1 for l in managed_layers if l.semantic_role == SemanticRole.READOUT)
+    print(f"Found {n_layers} managed layers ({n_embedding} embedding, {n_hidden} hidden, {n_readout} readout)")
 
     use_maxp = config["maxp"]["use_maxp"]
     parametrization = config["maxp"]["parametrization"]
