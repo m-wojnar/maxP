@@ -92,21 +92,30 @@ def compute_alignment(
     for idx, layer_name in enumerate(window.layer_names):
         cur = window.current.layers[layer_name]
         init = window.init.layers[layer_name]
-        
+
         base = float(window.fan_in[idx])
         log_base = torch.log(torch.tensor(base, dtype=torch.float64))
-        
+
         # Current state
         z = cur.input
         w = cur.weight
-        
+
         # Initial state
         z0 = init.input
 
-        # Ensure tensors are available
-        if z is None or w is None or z0 is None:
+        # For nn.Parameter layers (e.g., LayerNorm scale, pos_embed), there are no
+        # input activations. These EMBEDDING layers don't participate in alignment
+        # computation - just return 0.0 for their metrics.
+        if z is None or z0 is None:
+            alpha_list.append(0.0)
+            omega_list.append(0.0)
+            u_list.append(0.0)
+            continue
+
+        # Ensure weight tensor is available
+        if w is None:
             raise RuntimeError(
-                f"Missing tensors for layer {layer_name}. "
+                f"Missing weight tensor for layer {layer_name}. "
                 "Ensure capture_initial() and capture() were called."
             )
         

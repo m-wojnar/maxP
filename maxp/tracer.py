@@ -1,7 +1,8 @@
 """
-Tracer module for capturing activations and weights from nn.Linear layers.
+Tracer module for capturing activations and weights from managed layers.
 
 Provides forward hooks to record initial and current states for alignment computation.
+Supports nn.Linear, nn.Embedding, and nn.Parameter layers.
 """
 
 import contextlib
@@ -10,6 +11,8 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn as nn
 from torch import Tensor
+
+from maxp.utils import LayerInfo, SemanticRole, get_managed_layers, get_semantic_roles
 
 
 @dataclass
@@ -55,6 +58,9 @@ class TraceWindow:
     
     layer_names: list[str]
     """Ordered list of layer names."""
+
+    semantic_roles: list[SemanticRole] | None = None
+    """Per-layer semantic role (EMBEDDING, HIDDEN, READOUT)."""
     
     bl: list[float] | None = None
     """b_l exponents for ABC parametrization."""
@@ -65,16 +71,19 @@ class TraceWindow:
 
 class Tracer:
     """
-    Tracer for capturing activations and weights from nn.Linear layers.
+    Tracer for capturing activations and weights from managed layers.
     
-    Registers forward hooks on all nn.Linear modules (excluding attention layers)
-    to capture input/output activations and weights for alignment computation.
+    Registers forward hooks on all managed layers to capture input/output 
+    activations and weights for alignment computation.
+    
+    For nn.Parameter layers (e.g., pos_embed, cls_token), the parameter value
+    itself is treated as the "output" since there's no forward pass to hook.
     
     Args:
         model: PyTorch model to trace.
         sample_size: Maximum number of samples to keep from each batch.
             If None, keeps all samples. Default: 32.
-        bl: List of b_l exponents for ABC parametrization (one per layer).
+        bl: List of b_l exponents for ABC parametrization (one per managed layer).
         resample_w0: If True, don't store initial weights; instead store bl
             for resampling during alignment computation. Saves memory but
             introduces variance in alignment estimates. Default: False.
@@ -92,22 +101,33 @@ class Tracer:
         self.bl = bl
         self.resample_w0 = resample_w0
         
-        # Collect linear modules in definition order
-        self.layer_names: list[str] = []
-        self.modules: list[nn.Linear] = []
+        # Collect all managed layers
+        self.all_layer_infos = get_managed_layers(model)
         
-        self._collect_linear_layers(model, prefix="model")
+        if not self.all_layer_infos:
+            raise RuntimeError("Tracer: no managed layers found in model.")
         
-        if not self.modules:
-            raise RuntimeError("Tracer: no nn.Linear layers found in model.")
+        # Compute semantic roles
+        self.semantic_roles = get_semantic_roles(self.all_layer_infos)
         
-        # Compute fan_in once (static per layer)
-        self.fan_in: list[int] = [mod.in_features for mod in self.modules]
+        # Separate hookable layers (nn.Linear, nn.Embedding) from parameters
+        self._hookable_infos: list[LayerInfo] = []
+        self._parameter_infos: list[LayerInfo] = []
+        
+        for info in self.all_layer_infos:
+            if isinstance(info.module, (nn.Linear, nn.Embedding)):
+                self._hookable_infos.append(info)
+            elif isinstance(info.module, nn.Parameter):
+                self._parameter_infos.append(info)
+        
+        # Extract layer info
+        self.layer_names: list[str] = [info.name for info in self.all_layer_infos]
+        self.fan_in: list[int] = [info.fan_in for info in self.all_layer_infos]
         
         # Validate bl length if provided
-        if bl is not None and len(bl) != len(self.modules):
+        if bl is not None and len(bl) != len(self.all_layer_infos):
             raise ValueError(
-                f"Length of bl ({len(bl)}) must match number of Linear layers ({len(self.modules)})"
+                f"Length of bl ({len(bl)}) must match number of managed layers ({len(self.all_layer_infos)})"
             )
 
         if self.resample_w0 and self.bl is None:
@@ -120,33 +140,19 @@ class Tracer:
         # Whether we're currently capturing the initialization trace
         self._capturing_initial = False
         
-        # Register hooks
-        self._handles = [
-            mod.register_forward_hook(self._make_hook(name, idx))
-            for idx, (name, mod) in enumerate(zip(self.layer_names, self.modules))
-        ]
+        # Register hooks for hookable modules (nn.Linear, nn.Embedding)
+        self._handles = []
+        for info in self._hookable_infos:
+            hook = self._make_hook(info.name, info)
+            handle = info.module.register_forward_hook(hook)  # type: ignore
+            self._handles.append(handle)
         
         # Initial trace storage
         self.initial: StepTrace | None = None
     
-    def _collect_linear_layers(self, module: nn.Module, prefix: str) -> None:
-        """Recursively collect nn.Linear layers, skipping attention."""
-        for name, child in module.named_children():
-            full_name = f"{prefix}.{name}"
-            
-            # Skip attention layers
-            if "attn" in name.lower():
-                continue
-            
-            if isinstance(child, nn.Linear):
-                self.layer_names.append(full_name)
-                self.modules.append(child)
-            else:
-                self._collect_linear_layers(child, full_name)
-    
-    def _make_hook(self, name: str, layer_idx: int):
+    def _make_hook(self, name: str, layer_info: LayerInfo):
         """Create a forward hook for a specific layer."""
-        def hook(module: nn.Linear, inputs: tuple[Tensor, ...], output: Tensor):
+        def hook(module: nn.Module, inputs: tuple[Tensor, ...], output: Tensor):
             if not self._armed:
                 return
             
@@ -163,7 +169,13 @@ class Tracer:
                 # When resampling, we don't need to store initial weights at all.
                 weight = None
             else:
-                weight = module.weight.detach().cpu().clone().contiguous()
+                # Get weight from the module
+                if isinstance(module, nn.Linear):
+                    weight = module.weight.detach().cpu().clone().contiguous()
+                elif isinstance(module, nn.Embedding):
+                    weight = module.weight.detach().cpu().clone().contiguous()
+                else:
+                    weight = None
 
             self._snap[name] = LayerSnapshot(
                 input=x.detach().cpu().clone().contiguous(),
@@ -172,6 +184,26 @@ class Tracer:
             )
         
         return hook
+    
+    def _capture_parameters(self) -> None:
+        """Capture nn.Parameter layers (no forward hook, just read the value)."""
+        for info in self._parameter_infos:
+            param = info.module
+            assert isinstance(param, nn.Parameter)
+            
+            weight: Tensor | None
+            if self.resample_w0 and self._capturing_initial:
+                weight = None
+            else:
+                weight = param.detach().cpu().clone().contiguous()
+            
+            # For nn.Parameter, the "output" is the parameter value itself
+            # Input is None since there's no input to a bare parameter
+            self._snap[info.name] = LayerSnapshot(
+                input=None,
+                output=param.detach().cpu().clone().contiguous(),
+                weight=weight,
+            )
     
     @contextlib.contextmanager
     def _trace_context(self):
@@ -203,6 +235,8 @@ class Tracer:
         try:
             with self._trace_context():
                 _ = self.model(X)
+                # Capture nn.Parameter layers (no hook, just read value)
+                self._capture_parameters()
         finally:
             self._capturing_initial = False
         
@@ -223,6 +257,8 @@ class Tracer:
         """
         with self._trace_context():
             _ = self.model(X)
+            # Capture nn.Parameter layers (no hook, just read value)
+            self._capture_parameters()
         
         return StepTrace(step=step, layers=dict(self._snap))
     
@@ -249,6 +285,7 @@ class Tracer:
             n_layers=len(self.layer_names),
             fan_in=self.fan_in,
             layer_names=self.layer_names,
+            semantic_roles=self.semantic_roles,
             bl=self.bl,
             resample_w0=self.resample_w0,
         )

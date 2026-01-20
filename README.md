@@ -2,6 +2,12 @@
 
 **maxP** is a PyTorch learning rate scheduler that dynamically adjusts per-layer learning rates during training. It works by measuring the alignment between initial and current weights/activations, then solving a Linear Program (LP) to find optimal learning rate exponents that maximize training speed while maintaining numerical stability.
 
+The scheduler assigns learning rate constraints based on **semantic roles**:
+
+- **EMBEDDING**: Embedding layers, positional embeddings, scale parameters of the LayerNorm, or the first Linear layer if no embeddings exist
+- **HIDDEN**: MLP layers, attention Q/K/V projections, attention output
+- **READOUT**: The final output layer
+
 For a detailed explanation of the theoretical foundations, see [this blog post](https://iejmac.github.io/2025/03/26/alignments.html).
 
 ## Installation
@@ -66,15 +72,28 @@ for X, y in train_loader:
 
 ### Custom ABC Values
 
-Define custom exponents per layer instead of using a named parametrization:
+Define custom exponents per layer instead of using a named parametrization.
+
+**Important**: Custom values must satisfy stability constraints based on the layer's semantic role:
+
+- **EMBEDDING layer** (first Linear if no embeddings): `al + bl = 0.0`
+- **HIDDEN layers**: `al + bl = 0.5` (stability at initialization)
+- **READOUT layer** (last Linear): `al + bl >= 0.5`
+
+For a 4-layer MLP (no embedding layers), the roles are: EMBEDDING, HIDDEN, HIDDEN, READOUT.
 
 ```python
 from maxp import initialize_abc_weights, create_param_groups, MaxPScheduler
 
-# Define custom exponents per layer
+# Define custom exponents per layer (4-layer MLP: 1 EMBEDDING + 2 HIDDEN + 1 READOUT)
 al = [-0.5, 0.0, 0.0, 0.5]  # Layer output multipliers
 bl = [0.5, 0.5, 0.5, 0.5]   # Initialization variance exponents
 cl = [0.5, 1.0, 1.0, 0.5]   # Initial learning rate exponents
+
+# Verify constraints:
+# EMBEDDING layer (0): al + bl = -0.5 + 0.5 = 0.0 ✓
+# HIDDEN layers (1-2): al + bl = 0.0 + 0.5 = 0.5 ✓
+# READOUT layer (3):   al + bl = 0.5 + 0.5 = 1.0 >= 0.5 ✓
 
 initialize_abc_weights(model, al=al, bl=bl)
 param_groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
@@ -102,7 +121,7 @@ scheduler = MaxPScheduler(
 
 ### Feature Learning Constraint
 
-Enforce the `r_{L-1} = 0` constraint in the LP:
+Enforce the feature learning constraint (`r = 0` for the last hidden layer before readout) in the LP:
 
 ```python
 optimizer = torch.optim.SGD(param_groups, lr=0.1)
@@ -110,7 +129,7 @@ scheduler = MaxPScheduler(
     optimizer, model,
     parametrization="ntk",
     lr_prefactor=0.1,
-    feature_learning=True,
+    feature_learning=True,  # Enforces r=0 for last HIDDEN layer
 )
 ```
 

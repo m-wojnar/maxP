@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 
 from maxp import ScaledLinear, get_abc_parametrization, initialize_abc_weights
+from maxp.utils import SemanticRole
 
 
 class SimpleMLP(nn.Module):
@@ -91,12 +92,15 @@ class TestInitializeABCWeights:
         model = SimpleMLP()
         
         # Get expected al/bl for comparison
-        abc = get_abc_parametrization(n_layers=3, parametrization="mup")
+        # SimpleMLP has 3 LINEAR layers: l1 (EMBEDDING), l2 (HIDDEN), l3 (READOUT)
+        # No actual embedding layers, so first LINEAR becomes EMBEDDING
+        roles = [SemanticRole.EMBEDDING, SemanticRole.HIDDEN, SemanticRole.READOUT]
+        abc = get_abc_parametrization(semantic_roles=roles, parametrization="mup")
         
         initialize_abc_weights(model, parametrization="mup")
         
         # Check that layers with non-zero al are wrapped with ScaledLinear
-        # muP has al = [-0.5, 0.0, 0.5] for 3 layers
+        # muP has al = [-0.5, 0.0, 0.5] for EMBEDDING, HIDDEN, READOUT
         # So l1 (a=-0.5) and l3 (a=0.5) should be wrapped, l2 (a=0.0) should not
         assert isinstance(model.l1, ScaledLinear)
         assert isinstance(model.l2, nn.Linear) and not isinstance(model.l2, ScaledLinear)
@@ -206,14 +210,20 @@ class TestInitializeABCWeights:
         torch.manual_seed(42)
         model = SimpleMLP()
         
-        # muP has al = [-0.5, 0.0, 0.5]
-        # l1: fan_in=64, scale = 64^{-(-0.5)} = 64^{0.5} = 8
+        # muP has al = [-0.5, 0.0, 0.5] for EMBEDDING, HIDDEN, READOUT
+        # l1 (EMBEDDING) has a=-0.5, l2 (HIDDEN) has a=0.0, l3 (READOUT) has a=0.5
+        # l1 and l3 get wrapped, l2 stays plain Linear
+        # l1: fan_in=64, scale = 64^{0.5} = sqrt(64) = 8  (note: negative al -> positive exponent)
         # l3: fan_in=128, scale = 128^{-0.5} = 1/sqrt(128)
         initialize_abc_weights(model, parametrization="mup")
         
-        expected_scale_l1 = 64 ** 0.5  # 8.0
+        expected_scale_l1 = 64 ** 0.5   # sqrt(64) = 8, because al=-0.5 -> fan_in^(-al) = fan_in^0.5
         expected_scale_l3 = 128 ** -0.5  # ~0.0884
         
+        # l1 and l3 should be wrapped, l2 remains plain Linear
+        assert isinstance(model.l1, ScaledLinear)
+        assert isinstance(model.l2, nn.Linear) and not isinstance(model.l2, ScaledLinear)
+        assert isinstance(model.l3, ScaledLinear)
         assert abs(model.l1.scale - expected_scale_l1) < 1e-6
         assert abs(model.l3.scale - expected_scale_l3) < 1e-6
     
