@@ -148,17 +148,42 @@ Once the model is wrapped, applying parametrization is one line:
 from maxp_new import Parametrization
 
 model = Transformer(vocab_size=256, d_model=128, n_heads=4, d_ff=256, n_layers=4)
-param = Parametrization(model, lr_prefactor=0.1)
+sample = torch.randint(0, 256, (1, 8))
+param = Parametrization(model, lr_prefactor=0.1, sample_input=sample)
 optimizer = torch.optim.AdamW(param.param_groups)
 ```
 
 `Parametrization` auto-discovers all `ParametrizedModule` instances and:
 1. Sets output scales: `pm.scale = width_dim^(-a)`
 2. Re-initialises weights: `std = width_dim^(-b)`
-3. Solves for optimal `c` per layer type via LP
+3. Solves for optimal `c` per op via the DAG LP solver
 4. Builds `param_groups` with `lr = lr_prefactor * width_dim^(-c)`
 
-Now verify with the coord check:
+### Chain solver vs DAG solver
+
+When you pass `sample_input`, `Parametrization` traces a forward pass to discover
+the actual PM-to-PM data flow — which ops feed into which, and whether they
+combine via addition (residual) or multiplication (SwiGLU). It builds a DAG and
+solves the LP with one `c` variable per weight-bearing op.
+
+Without `sample_input`, it falls back to a chain solver that collapses all ops
+of the same `layer_type` into a single `c` value. Both give the same results
+under the default alignment presets, but the DAG solver is required for Phase 2
+(per-op measured alignment).
+
+### Visualizing the DAG
+
+To verify the tracer parsed your model correctly:
+
+```bash
+python examples_new/visualize_dag.py --solve
+python examples_new/visualize_dag.py --solve --n-layers 1  # simpler view
+```
+
+This shows the traced topology, merge types (`+` for add/residual, `*` for
+multiply/SwiGLU), and the solved `c` values.
+
+### Verify with coord check
 
 ```bash
 python examples_new/parameterize_example/run.py --parametrized --plot
