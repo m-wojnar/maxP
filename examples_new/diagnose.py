@@ -19,6 +19,9 @@ import torch.nn.functional as F
 import sys; sys.path.insert(0, ".")
 from maxp_new.trace import classify, measure_activations, ClassifiedOp
 from examples_new.transformer import Transformer
+from examples_new.parameterized_transformer import Transformer as PTransformer
+from maxp_new.parametrization import Parametrization
+from maxp_new.utils import ParametrizedModule
 
 
 def op_label(op: ClassifiedOp) -> str:
@@ -52,8 +55,8 @@ def diagnose_axis(
         act_stats: np.array of shape (n_all_ops, n_steps, n_widths, n_seeds)
     """
     # Classify using the two smallest widths
-    small_model = make_model_fn(widths[0])
-    large_model = make_model_fn(widths[1])
+    small_model, _ = make_model_fn(widths[0])
+    large_model, _ = make_model_fn(widths[1])
     ops = classify(small_model, large_model, make_input_fn(widths[0]), make_input_fn(widths[1]))
 
     traced_ops = [op for op in ops if op.op != "elementwise"]
@@ -66,9 +69,15 @@ def diagnose_axis(
     for seed_idx in range(n_seeds):
         for w_idx, w in enumerate(widths):
             torch.manual_seed(seed_idx * 1000 + w)
-            model = make_model_fn(w)
-            vocab_size = model.tok_emb.num_embeddings
-            opt = torch.optim.AdamW(model.parameters(), lr=3e-4)
+            model, param_groups = make_model_fn(w)
+            tok_emb = model.tok_emb
+            if isinstance(tok_emb, ParametrizedModule):
+                tok_emb = tok_emb.inner
+            vocab_size = tok_emb.num_embeddings
+            if param_groups is not None:
+                opt = torch.optim.AdamW(param_groups)
+            else:
+                opt = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
             for step in range(n_steps):
                 torch.manual_seed(seed_idx * 100000 + step)
@@ -109,7 +118,8 @@ def print_axis(axis_name, ops, affected, act_stats, widths):
         print()
 
 
-def plot_axis(axis_name, ops, affected, act_stats, widths, filename):
+def plot_axis(axis_name, ops, affected, act_stats, widths, filename,
+              plot_every=1):
     import matplotlib.pyplot as plt
     from matplotlib import cm
 
@@ -119,6 +129,7 @@ def plot_axis(axis_name, ops, affected, act_stats, widths, filename):
         return
 
     n_steps = act_stats.shape[1]
+    steps_to_plot = list(range(0, n_steps, plot_every))
     n_cols = min(4, n_affected)
     n_rows = (n_affected + n_cols - 1) // n_cols
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 3.5 * n_rows), squeeze=False)
@@ -132,7 +143,7 @@ def plot_axis(axis_name, ops, affected, act_stats, widths, filename):
         op = ops[op_idx]
         data = act_stats[op_idx]
 
-        for step in range(n_steps):
+        for step in steps_to_plot:
             means = data[step].mean(axis=1)
             stderrs = data[step].std(axis=1) / np.sqrt(data.shape[2])
             color = cmap(norm(step))
@@ -176,7 +187,16 @@ def plot_axis(axis_name, ops, affected, act_stats, widths, filename):
 def make_transformer(**kwargs):
     defaults = dict(vocab_size=256, d_model=128, n_heads=4, d_ff=256, n_layers=2)
     defaults.update(kwargs)
-    return Transformer(**defaults)
+    return Transformer(**defaults), None
+
+
+def make_ptransformer(**kwargs):
+    """Create a ParametrizedModule-wrapped transformer with ABC parametrization applied."""
+    defaults = dict(vocab_size=256, d_model=128, n_heads=4, d_ff=256, n_layers=2)
+    defaults.update(kwargs)
+    model = PTransformer(**defaults)
+    param = Parametrization(model, lr_prefactor=1.0)
+    return model, param.param_groups
 
 
 AXES = {
@@ -189,6 +209,17 @@ AXES = {
     # Ops already in d_model axis will be deduplicated.
     "head_dim": {
         "make_model": lambda w: make_transformer(d_model=4 * w, n_heads=4, d_ff=8 * w),
+        "widths": [16, 32, 64, 128, 256],
+    },
+}
+
+AXES_PARAMETRIZED = {
+    "d_model": {
+        "make_model": lambda w: make_ptransformer(d_model=w, n_heads=w // 16, d_ff=2 * w),
+        "widths": [64, 128, 256, 512, 1024],
+    },
+    "head_dim": {
+        "make_model": lambda w: make_ptransformer(d_model=4 * w, n_heads=4, d_ff=8 * w),
         "widths": [16, 32, 64, 128, 256],
     },
 }
@@ -210,7 +241,15 @@ if __name__ == "__main__":
     parser.add_argument("--plot", action="store_true")
     parser.add_argument("--steps", type=int, default=10)
     parser.add_argument("--seeds", type=int, default=3)
+    parser.add_argument("--parametrized", action="store_true",
+                        help="Use ParametrizedModule transformer with ABC parametrization")
+    parser.add_argument("--plot-every", type=int, default=1,
+                        help="Plot every N-th step (default: every step)")
     args = parser.parse_args()
+
+    axes = AXES_PARAMETRIZED if args.parametrized else AXES
+    variant = "parametrized" if args.parametrized else "vanilla"
+    print(f"Using {variant} transformer")
 
     # An op classified as "embedding" in axis A is unaffected by that width dim,
     # but may be "hidden"/"readout" in axis B.  We only dedup non-embedding ops
@@ -218,7 +257,7 @@ if __name__ == "__main__":
     claimed: dict[str, str] = {}  # op_key -> axis_name (non-embedding only)
     shown_embeddings: set[str] = set()  # embedding ops already displayed
 
-    for axis_name, axis_cfg in AXES.items():
+    for axis_name, axis_cfg in axes.items():
         print(f"\nDiagnosing axis: {axis_name}...")
         ops, affected, act_stats = diagnose_axis(
             make_model_fn=axis_cfg["make_model"],
@@ -254,4 +293,5 @@ if __name__ == "__main__":
 
         if args.plot:
             plot_axis(axis_name, ops, deduped, act_stats,
-                      axis_cfg["widths"], f"diagnose_{axis_name}.png")
+                      axis_cfg["widths"], f"diagnose_{variant}_{axis_name}.png",
+                      plot_every=args.plot_every)

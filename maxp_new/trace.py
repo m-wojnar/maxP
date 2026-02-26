@@ -93,6 +93,7 @@ class _MatmulTracer:
         self._module_stack: list[str] = []
         self._hooks: list[torch.utils.hooks.RemovableHook] = []
         self._module_names: dict[int, str] = {}
+        self._path_to_module: dict[str, nn.Module] = {}
         self._wrapped_embeddings: list[tuple[nn.Embedding, torch.Tensor]] = []
 
     def __enter__(self):
@@ -112,6 +113,7 @@ class _MatmulTracer:
         # Register hooks to track module context
         for name, mod in self.model.named_modules():
             self._module_names[id(mod)] = name
+            self._path_to_module[name] = mod
             self._hooks.append(mod.register_forward_pre_hook(self._pre_hook))
             self._hooks.append(mod.register_forward_hook(self._post_hook))
 
@@ -163,7 +165,15 @@ class _MatmulTracer:
             source_loc=source_loc,
         ))
         if self.record_activations:
-            self.activation_stats.append(output.detach().abs().mean().item())
+            val = output.detach().abs().mean().item()
+            # Apply scale from enclosing module (e.g. ParametrizedModule.scale)
+            for path in reversed(self._module_stack):
+                if path and path in self._path_to_module:
+                    scale = getattr(self._path_to_module[path], 'scale', None)
+                    if isinstance(scale, (int, float)) and scale != 1.0:
+                        val *= abs(scale)
+                        break
+            self.activation_stats.append(val)
         self._counter += 1
 
 

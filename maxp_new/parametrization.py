@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 from maxp_new.solver import find_c
-from maxp_new.utils import ScaledModule, _set_nested_attr
+from maxp_new.utils import ParametrizedModule
 
 
 # Alignment assumptions: (alpha, omega, u) per layer
@@ -15,87 +15,165 @@ _ALIGNMENT_PRESETS = {
     "no": (0.0, 0.0, 0.0),
 }
 
+# Default (a, b) per layer type for muP
+# Constraints: embedding a+b=0, hidden a+b=0.5, readout a+b>=0.5
+_DEFAULT_AB = {
+    "embedding": (-0.5, 0.5),  # a+b=0, scale=sqrt(n), std=1/sqrt(n)
+    "hidden":    (0.0, 0.5),   # a+b=0.5, no multiplier, std=1/sqrt(n)
+    "readout":   (0.5, 0.5),   # a+b=1.0, scale=1/sqrt(n), std=1/sqrt(n)
+}
+
+# Canonical ordering for the LP solver chain
+_CANONICAL_ORDER = ["embedding", "hidden", "readout"]
+
 
 class Parametrization:
-    """Apply ABC parametrization to a model.
+    """Apply ABC parametrization to a model containing ParametrizedModule markers.
+
+    Walks the model via ``named_modules()`` to find all
+    :class:`ParametrizedModule` instances.  For each one it:
+
+    1. Reads ``width_dim`` and ``layer_type``.
+    2. Looks up ``(a, b)`` from *ab_overrides* or the built-in defaults.
+    3. Re-initialises weights: ``std = std_prefactor * width_dim ** (-b)``.
+    4. Sets the output scale: ``pm.scale = width_dim ** (-a)``.
+    5. Solves for ``c`` per layer type via LP, then computes
+       ``lr = lr_prefactor * width_dim ** (-c)`` for the param group.
+
+    Parameter-less modules (bare callables) only get their scale set.
+
+    All other learnable parameters (LayerNorm, biases not inside a
+    ParametrizedModule, etc.) are collected into a single ``"_other"`` group
+    at ``lr_prefactor``.
 
     Args:
         model: PyTorch model (modified in-place).
-        layers: Dict mapping module name → {"a": float, "b": float} or
-            {"a": float, "b": float, "c": float}. If c is omitted, it's
-            solved for via LP.
-        optimizer_type: "adam" or "sgd" — needed for solver.
-        alignment: "full" or "no" — alignment assumption for solving c.
+        optimizer_type: ``"adam"`` or ``"sgd"`` — needed for LP solver.
+        alignment: ``"full"`` or ``"no"`` — alignment assumption for solving c.
         lr_prefactor: Base learning rate multiplier.
         std_prefactor: Multiplier for init std.
+        ab_overrides: Optional dict mapping layer_type → ``(a, b)`` to
+            override the built-in defaults.
     """
 
     def __init__(
         self,
         model: nn.Module,
         *,
-        layers: dict[str, dict[str, float]],
         optimizer_type: str = "adam",
         alignment: str = "full",
         lr_prefactor: float = 1e-3,
         std_prefactor: float = 1.0,
+        ab_overrides: dict[str, tuple[float, float]] | None = None,
     ):
         self.model = model
         self.lr_prefactor = lr_prefactor
 
-        # Resolve layers from model
-        names = list(layers.keys())
-        modules = []
-        for name in names:
-            parts = name.split(".")
-            mod = model
-            for p in parts:
-                mod = getattr(mod, p)
-            modules.append(mod)
+        ab = dict(_DEFAULT_AB)
+        if ab_overrides:
+            ab.update(ab_overrides)
 
-        al = [layers[n]["a"] for n in names]
-        bl = [layers[n]["b"] for n in names]
+        # Discover all ParametrizedModule instances
+        pms: list[tuple[str, ParametrizedModule]] = [
+            (name, mod) for name, mod in model.named_modules()
+            if isinstance(mod, ParametrizedModule)
+        ]
 
-        # Resolve c_l: user-provided or solved
-        if all("c" in layers[n] for n in names):
-            cl = [layers[n]["c"] for n in names]
-        elif any("c" in layers[n] for n in names):
-            raise ValueError("Either all layers must specify 'c' or none.")
+        if not pms:
+            raise ValueError(
+                "No ParametrizedModule instances found in the model. "
+                "Wrap relevant layers with ParametrizedModule before calling Parametrization."
+            )
+
+        # Validate layer types
+        for name, pm in pms:
+            if pm.layer_type not in ab:
+                raise ValueError(
+                    f"Unknown layer_type '{pm.layer_type}' for '{name}'. "
+                    f"Supported: {list(ab.keys())} (or pass ab_overrides)."
+                )
+
+        # Determine which types have learnable parameters
+        types_with_params: set[str] = set()
+        for _, pm in pms:
+            if pm.inner is not None and any(True for _ in pm.inner.parameters()):
+                types_with_params.add(pm.layer_type)
+
+        # Build virtual chain in canonical order and solve for c per type.
+        # The LP solver expects: embedding(a+b=0) → hidden(a+b=0.5) → readout(a+b≥0.5).
+        chain_types = [lt for lt in _CANONICAL_ORDER if lt in types_with_params]
+
+        if len(chain_types) >= 2:
+            chain_al = [ab[lt][0] for lt in chain_types]
+            chain_bl = [ab[lt][1] for lt in chain_types]
+            chain_cl = self._solve_c(chain_al, chain_bl, optimizer_type, alignment)
+            c_by_type: dict[str, float] = dict(zip(chain_types, chain_cl))
+        elif len(chain_types) == 1:
+            # Single type — no solver needed, use c=0 (lr = lr_prefactor)
+            c_by_type = {chain_types[0]: 0.0}
         else:
-            cl = self._solve_c(al, bl, optimizer_type, alignment)
+            c_by_type = {}
 
-        # Init weights + apply multipliers
+        # Apply: init weights, set scale, build param groups
+        names: list[str] = []
+        al: list[float] = []
+        bl: list[float] = []
+        cl: list[float | None] = []
         fan_ins: list[int] = []
-        for name, mod, a, b in zip(names, modules, al, bl):
-            fan_in = mod.weight.shape[1] if mod.weight.ndim >= 2 else mod.weight.shape[0]
-            fan_ins.append(fan_in)
 
-            std = std_prefactor * (fan_in ** (-b))
-            with torch.no_grad():
-                mod.weight.normal_(mean=0.0, std=std)
-                if hasattr(mod, "bias") and mod.bias is not None:
-                    mod.bias.zero_()
-
-            if a != 0.0:
-                _set_nested_attr(model, name, ScaledModule(mod, fan_in ** (-a)))
-
-        # Build param groups
         parametrized_ids: set[int] = set()
         groups: list[dict] = []
-        for name, mod, c, fan_in in zip(names, modules, cl, fan_ins):
-            params = list(mod.parameters())
-            for p in params:
-                parametrized_ids.add(id(p))
-            groups.append({
-                "params": params,
-                "lr": lr_prefactor * (fan_in ** (-c)),
-                "layer_name": name,
-                "fan_in": fan_in,
-                "c": float(c),
-                "maxp_managed": True,
-            })
 
-        other = [p for p in model.parameters() if p.requires_grad and id(p) not in parametrized_ids]
+        for name, pm in pms:
+            lt = pm.layer_type
+            a, b = ab[lt]
+            fan_in = pm.width_dim
+            has_params = pm.inner is not None and any(True for _ in pm.inner.parameters())
+
+            names.append(name)
+            al.append(a)
+            bl.append(b)
+            fan_ins.append(fan_in)
+
+            # Set output scale
+            pm.scale = fan_in ** (-a) if a != 0.0 else 1.0
+
+            if has_params:
+                c = c_by_type[lt]
+                cl.append(c)
+
+                # Re-initialise weights
+                inner = pm.inner
+                assert inner is not None
+                for pname, param in inner.named_parameters():
+                    if param.ndim >= 2:
+                        std = std_prefactor * (fan_in ** (-b))
+                        with torch.no_grad():
+                            param.normal_(mean=0.0, std=std)
+                    elif "bias" in pname:
+                        with torch.no_grad():
+                            param.zero_()
+
+                # Build param group
+                params = list(inner.parameters())
+                for p in params:
+                    parametrized_ids.add(id(p))
+                groups.append({
+                    "params": params,
+                    "lr": lr_prefactor * (fan_in ** (-c)),
+                    "layer_name": name,
+                    "fan_in": fan_in,
+                    "c": float(c),
+                    "maxp_managed": True,
+                })
+            else:
+                cl.append(None)
+
+        # Collect all other parameters (LayerNorm, etc.)
+        other = [
+            p for p in model.parameters()
+            if p.requires_grad and id(p) not in parametrized_ids
+        ]
         if other:
             groups.append({
                 "params": other,
