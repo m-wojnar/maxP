@@ -28,6 +28,7 @@ class _TracingTensor(torch.Tensor):
     """Tensor subclass that intercepts matmul ops via __torch_function__."""
 
     _tracer: "_MatmulTracer | None" = None
+    _dag_builder: "Any | None" = None  # _DagBuilder instance during DAG tracing
 
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
@@ -47,12 +48,19 @@ class _TracingTensor(torch.Tensor):
             tracer._record(_TRACED_OPS[func], raw_inputs, raw_out)
 
         # Wrap output (including tensors inside tuples/lists)
-        return cls._wrap_output(out)
+        wrapped_out = cls._wrap_output(out)
+
+        # PM provenance tracking for DAG building
+        if cls._dag_builder is not None:
+            _propagate_pm_tags(cls, func, args, wrapped_out)
+
+        return wrapped_out
 
     @classmethod
     def _wrap(cls, t: torch.Tensor) -> "_TracingTensor":
         r = t.as_subclass(cls)
         r._real = t
+        r._pm_tags = frozenset()
         return r
 
     @classmethod
@@ -66,6 +74,58 @@ class _TracingTensor(torch.Tensor):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
+
+
+# Ops that indicate elementwise multiply (merge_type = SUM in exponent space)
+_MUL_OPS = {torch.mul, torch.Tensor.mul, torch.Tensor.__mul__}
+
+# Ops that indicate addition (merge_type = MIN in exponent space)
+_ADD_OPS = {torch.add, torch.Tensor.add, torch.Tensor.__add__}
+
+
+def _propagate_pm_tags(cls, func, args, wrapped_out):
+    """Propagate _pm_tags from inputs to output, recording merge types.
+
+    When tensors from different PM sources are combined (add or mul),
+    a synthetic merge node is created so that tags never accumulate
+    beyond a single element.  This keeps the DAG O(N) in depth instead
+    of O(N^2).
+    """
+    from maxp_new.dag import MergeType
+
+    # Collect distinct tag sets from tensor inputs
+    input_tag_sets: list[frozenset[str]] = []
+    for arg in args:
+        if isinstance(arg, _TracingTensor):
+            tags = getattr(arg, '_pm_tags', frozenset())
+            if tags and tags not in input_tag_sets:
+                input_tag_sets.append(tags)
+
+    if not input_tag_sets:
+        return
+
+    if len(input_tag_sets) > 1 and cls._dag_builder is not None:
+        # Multiple different sources -> create a synthetic merge node
+        if func in _MUL_OPS:
+            merge_type = MergeType.SUM
+        elif func in _ADD_OPS:
+            merge_type = MergeType.MIN
+        else:
+            merge_type = MergeType.MIN  # conservative default
+        merge_name = cls._dag_builder.create_merge_node(
+            input_tag_sets, merge_type)
+        result_tags = frozenset({merge_name})
+    else:
+        # Single source (or no dag_builder) -> pass through
+        result_tags = frozenset().union(*input_tag_sets)
+
+    # Set tags on output
+    if isinstance(wrapped_out, _TracingTensor):
+        wrapped_out._pm_tags = result_tags
+    elif isinstance(wrapped_out, (tuple, list)):
+        for item in wrapped_out:
+            if isinstance(item, _TracingTensor):
+                item._pm_tags = result_tags
 
 
 # Which torch functions to trace and what to call them
@@ -326,11 +386,3 @@ def measure_activations(model: nn.Module, x: torch.Tensor) -> list[float]:
     return tracer.activation_stats
 
 
-def trace_pair(
-    small_model: nn.Module,
-    large_model: nn.Module,
-    small_input: torch.Tensor,
-    large_input: torch.Tensor,
-) -> tuple[list[TracedOp], list[TracedOp]]:
-    """Trace both models and return paired op lists."""
-    return trace_forward(small_model, small_input), trace_forward(large_model, large_input)

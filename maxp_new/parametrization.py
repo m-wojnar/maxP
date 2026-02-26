@@ -5,8 +5,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from maxp_new.solver import find_c
-from maxp_new.utils import ParametrizedModule
+from maxp_new.solver import find_c, find_c_dag
+from maxp_new.module import ParametrizedModule
 
 
 # Alignment assumptions: (alpha, omega, u) per layer
@@ -40,6 +40,10 @@ class Parametrization:
     5. Solves for ``c`` per layer type via LP, then computes
        ``lr = lr_prefactor * width_dim ** (-c)`` for the param group.
 
+    When ``sample_input`` is provided, a DAG of PM-to-PM data flow is traced
+    and the LP solver assigns a per-PM ``c`` value instead of collapsing by
+    layer type.
+
     Parameter-less modules (bare callables) only get their scale set.
 
     All other learnable parameters (LayerNorm, biases not inside a
@@ -54,6 +58,9 @@ class Parametrization:
         std_prefactor: Multiplier for init std.
         ab_overrides: Optional dict mapping layer_type → ``(a, b)`` to
             override the built-in defaults.
+        sample_input: Optional example input for DAG tracing.  When provided,
+            the solver assigns per-PM c values based on the actual data flow
+            graph instead of collapsing by layer type.
     """
 
     def __init__(
@@ -65,6 +72,7 @@ class Parametrization:
         lr_prefactor: float = 1e-3,
         std_prefactor: float = 1.0,
         ab_overrides: dict[str, tuple[float, float]] | None = None,
+        sample_input: torch.Tensor | None = None,
     ):
         self.model = model
         self.lr_prefactor = lr_prefactor
@@ -93,26 +101,13 @@ class Parametrization:
                     f"Supported: {list(ab.keys())} (or pass ab_overrides)."
                 )
 
-        # Determine which types have learnable parameters
-        types_with_params: set[str] = set()
-        for _, pm in pms:
-            if pm.inner is not None and any(True for _ in pm.inner.parameters()):
-                types_with_params.add(pm.layer_type)
-
-        # Build virtual chain in canonical order and solve for c per type.
-        # The LP solver expects: embedding(a+b=0) → hidden(a+b=0.5) → readout(a+b≥0.5).
-        chain_types = [lt for lt in _CANONICAL_ORDER if lt in types_with_params]
-
-        if len(chain_types) >= 2:
-            chain_al = [ab[lt][0] for lt in chain_types]
-            chain_bl = [ab[lt][1] for lt in chain_types]
-            chain_cl = self._solve_c(chain_al, chain_bl, optimizer_type, alignment)
-            c_by_type: dict[str, float] = dict(zip(chain_types, chain_cl))
-        elif len(chain_types) == 1:
-            # Single type — no solver needed, use c=0 (lr = lr_prefactor)
-            c_by_type = {chain_types[0]: 0.0}
+        # Solve for c: DAG path (per-op) or chain path (per-type)
+        if sample_input is not None:
+            c_by_name = self._solve_c_dag(
+                model, sample_input, ab, optimizer_type, alignment
+            )
         else:
-            c_by_type = {}
+            c_by_name = self._solve_c_chain(pms, ab, optimizer_type, alignment)
 
         # Apply: init weights, set scale, build param groups
         names: list[str] = []
@@ -128,7 +123,7 @@ class Parametrization:
             lt = pm.layer_type
             a, b = ab[lt]
             fan_in = pm.width_dim
-            has_params = pm.inner is not None and any(True for _ in pm.inner.parameters())
+            has_params = pm.weight is not None
 
             names.append(name)
             al.append(a)
@@ -139,19 +134,16 @@ class Parametrization:
             pm.scale = fan_in ** (-a) if a != 0.0 else 1.0
 
             if has_params:
-                c = c_by_type[lt]
+                c = c_by_name[name]
                 cl.append(c)
 
                 # Re-initialise weights
                 inner = pm.inner
                 assert inner is not None
-                for pname, param in inner.named_parameters():
-                    if param.ndim >= 2:
-                        std = std_prefactor * (fan_in ** (-b))
-                        with torch.no_grad():
-                            param.normal_(mean=0.0, std=std)
-                    elif "bias" in pname:
-                        with torch.no_grad():
+                with torch.no_grad():
+                    pm.weight.normal_(mean=0.0, std=std_prefactor * (fan_in ** (-b)))
+                    for pname, param in inner.named_parameters():
+                        if "bias" in pname:
                             param.zero_()
 
                 # Build param group
@@ -196,14 +188,67 @@ class Parametrization:
         """Phase 2 stub — dynamic alignment measurement + re-solve."""
 
     @staticmethod
-    def _solve_c(al, bl, optimizer_type, alignment):
+    def _solve_c_chain(pms, ab, optimizer_type, alignment) -> dict[str, float]:
+        """Chain solver: collapse by layer_type, solve flat LP, map back."""
         preset = _ALIGNMENT_PRESETS.get(alignment)
         if preset is None:
             raise ValueError(f"Unknown alignment '{alignment}'. Supported: {list(_ALIGNMENT_PRESETS)}")
+
+        # Determine which types have learnable parameters
+        types_with_params: set[str] = set()
+        for _, pm in pms:
+            if pm.weight is not None:
+                types_with_params.add(pm.layer_type)
+
+        chain_types = [lt for lt in _CANONICAL_ORDER if lt in types_with_params]
+
+        if len(chain_types) >= 2:
+            chain_al = [ab[lt][0] for lt in chain_types]
+            chain_bl = [ab[lt][1] for lt in chain_types]
+
+            alpha_val, omega_val, u_val = preset
+            n = len(chain_al)
+            alpha = [alpha_val] * n
+            omega = [omega_val] * n
+            u = [u_val] * n
+            chain_cl, _ = find_c(chain_al, chain_bl, alpha, omega, u,
+                                 optimizer_type=optimizer_type)
+            c_by_type: dict[str, float] = dict(zip(chain_types, chain_cl))
+        elif len(chain_types) == 1:
+            c_by_type = {chain_types[0]: 0.0}
+        else:
+            c_by_type = {}
+
+        # Map type-level c back to each PM by name
+        c_by_name: dict[str, float] = {}
+        for name, pm in pms:
+            if pm.weight is not None:
+                c_by_name[name] = c_by_type[pm.layer_type]
+        return c_by_name
+
+    @staticmethod
+    def _solve_c_dag(model, sample_input, ab, optimizer_type, alignment) -> dict[str, float]:
+        """DAG solver: trace PM data flow, solve per-op LP."""
+        from maxp_new.dag import trace_pm_dag
+
+        preset = _ALIGNMENT_PRESETS.get(alignment)
+        if preset is None:
+            raise ValueError(f"Unknown alignment '{alignment}'. Supported: {list(_ALIGNMENT_PRESETS)}")
+
         alpha_val, omega_val, u_val = preset
-        n = len(al)
-        alpha = [alpha_val] * n
-        omega = [omega_val] * n
-        u = [u_val] * n
-        cl, _rl = find_c(al, bl, alpha, omega, u, optimizer_type=optimizer_type)
-        return cl
+
+        graph = trace_pm_dag(model, sample_input, ab=ab)
+
+        # Set alignment values on all nodes
+        for node in graph.nodes.values():
+            node.alpha = alpha_val
+            node.omega = omega_val
+            node.u = u_val
+
+        result = find_c_dag(graph, optimizer_type=optimizer_type)
+
+        c_by_name: dict[str, float] = {}
+        for name, (c_val, _r_val) in result.items():
+            if c_val is not None:
+                c_by_name[name] = c_val
+        return c_by_name
