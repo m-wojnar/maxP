@@ -20,6 +20,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torchvision import datasets, transforms
+from tqdm import tqdm
 
 from vit import ViT
 from parametrized_vit import make_parametrized_vit
@@ -31,6 +32,22 @@ def get_device() -> torch.device:
     if torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
+
+
+def log_device_info(device: torch.device):
+    print(f"Using device: {device}")
+    if device.type == "cuda":
+        print(f"  GPU: {torch.cuda.get_device_name(device)}")
+        mem = torch.cuda.get_device_properties(device).total_mem
+        print(f"  Total memory: {mem / 1024**3:.1f} GB")
+
+
+def log_gpu_mem(prefix: str = ""):
+    if not torch.cuda.is_available():
+        return
+    alloc = torch.cuda.memory_allocated() / 1024**2
+    reserved = torch.cuda.memory_reserved() / 1024**2
+    print(f"  {prefix}GPU mem: {alloc:.0f} MB allocated, {reserved:.0f} MB reserved")
 
 
 def load_cifar10(device: torch.device, root: str = "./data") -> tuple[torch.Tensor, torch.Tensor]:
@@ -66,22 +83,27 @@ def train_sp(
     mlp_ratio: float,
     batch_size: int,
     seed: int,
+    desc: str = "",
 ) -> float:
     torch.manual_seed(seed)
     model = ViT(embed_dim=width, n_layers=n_layers, mlp_ratio=mlp_ratio).to(X.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     it = batch_iter(X, Y, batch_size)
     last_loss = float("nan")
-    for _ in range(n_steps):
+    pbar = tqdm(range(n_steps), desc=desc, leave=False, ncols=80)
+    for _ in pbar:
         xb, yb = next(it)
         logits = model(xb)
         loss = F.cross_entropy(logits, yb)
         if not math.isfinite(loss.item()):
+            pbar.close()
             return float("nan")
         last_loss = loss.item()
+        pbar.set_postfix(loss=f"{last_loss:.4f}")
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+    pbar.close()
     return last_loss
 
 
@@ -96,6 +118,7 @@ def train_mup(
     mlp_ratio: float,
     batch_size: int,
     seed: int,
+    desc: str = "",
 ) -> float:
     torch.manual_seed(seed)
     model, param = make_parametrized_vit(
@@ -108,16 +131,20 @@ def train_mup(
     optimizer = torch.optim.Adam(param.param_groups)
     it = batch_iter(X, Y, batch_size)
     last_loss = float("nan")
-    for _ in range(n_steps):
+    pbar = tqdm(range(n_steps), desc=desc, leave=False, ncols=80)
+    for _ in pbar:
         xb, yb = next(it)
         logits = model(xb)
         loss = F.cross_entropy(logits, yb)
         if not math.isfinite(loss.item()):
+            pbar.close()
             return float("nan")
         last_loss = loss.item()
+        pbar.set_postfix(loss=f"{last_loss:.4f}")
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+    pbar.close()
     return last_loss
 
 
@@ -195,9 +222,10 @@ def main():
     mup_lrs = np.logspace(np.log10(args.mup_lr_min), np.log10(args.mup_lr_max), args.n_lrs).tolist()
 
     device = get_device()
-    print(f"Using device: {device}")
+    log_device_info(device)
     print("Loading CIFAR-10...")
     X, Y = load_cifar10(device)
+    log_gpu_mem("After data load: ")
 
     sp_results: dict[int, list[tuple[float, float]]] = {}
     mup_results: dict[int, list[tuple[float, float]]] = {}
@@ -211,7 +239,7 @@ def main():
 
         for lr in sp_lrs:
             run += 1
-            print(f"[{run}/{total_runs}] SP  d={width}  lr={lr:.2e} ...", end=" ", flush=True)
+            desc = f"[{run}/{total_runs}] SP  d={width} lr={lr:.1e}"
             loss = train_sp(
                 width, X, Y,
                 lr=lr,
@@ -220,13 +248,17 @@ def main():
                 mlp_ratio=args.mlp_ratio,
                 batch_size=args.batch_size,
                 seed=args.seed,
+                desc=desc,
             )
             sp_results[width].append((lr, loss))
-            print(f"loss={loss:.4f}" if math.isfinite(loss) else "diverged")
+            result = f"loss={loss:.4f}" if math.isfinite(loss) else "diverged"
+            print(f"{desc} -> {result}")
+
+        log_gpu_mem(f"After SP d={width}: ")
 
         for lr in mup_lrs:
             run += 1
-            print(f"[{run}/{total_runs}] muP d={width}  lr={lr:.2e} ...", end=" ", flush=True)
+            desc = f"[{run}/{total_runs}] muP d={width} lr={lr:.1e}"
             loss = train_mup(
                 width, X, Y,
                 lr_prefactor=lr,
@@ -235,9 +267,13 @@ def main():
                 mlp_ratio=args.mlp_ratio,
                 batch_size=args.batch_size,
                 seed=args.seed,
+                desc=desc,
             )
             mup_results[width].append((lr, loss))
-            print(f"loss={loss:.4f}" if math.isfinite(loss) else "diverged")
+            result = f"loss={loss:.4f}" if math.isfinite(loss) else "diverged"
+            print(f"{desc} -> {result}")
+
+        log_gpu_mem(f"After muP d={width}: ")
 
     if not args.no_plot:
         plot_results(sp_results, mup_results, filename=args.output)
