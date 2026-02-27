@@ -36,21 +36,6 @@ def get_device() -> torch.device:
     return torch.device("cpu")
 
 
-def log_device_info(device: torch.device):
-    print(f"Using device: {device}")
-    if device.type == "cuda":
-        print(f"  GPU: {torch.cuda.get_device_name(device)}")
-        mem = torch.cuda.get_device_properties(device).total_memory
-        print(f"  Total memory: {mem / 1024**3:.1f} GB")
-
-
-def log_gpu_mem(prefix: str = ""):
-    if not torch.cuda.is_available():
-        return
-    alloc = torch.cuda.memory_allocated() / 1024**2
-    reserved = torch.cuda.memory_reserved() / 1024**2
-    print(f"  {prefix}GPU mem: {alloc:.0f} MB allocated, {reserved:.0f} MB reserved")
-
 
 def load_cifar10(device: torch.device, root: str = "./data") -> tuple[torch.Tensor, torch.Tensor]:
     """Load CIFAR-10 train split as flattened, normalised tensors on device."""
@@ -227,10 +212,9 @@ def main():
     mup_lrs = np.logspace(np.log10(args.mup_lr_min), np.log10(args.mup_lr_max), args.n_lrs).tolist()
 
     device = get_device()
-    log_device_info(device)
+    print(f"Using device: {device}")
     print("Loading CIFAR-10...")
     X, Y = load_cifar10(device)
-    log_gpu_mem("After data load: ")
 
     sp_results: dict[int, list[tuple[float, float]]] = {}
     mup_results: dict[int, list[tuple[float, float]]] = {}
@@ -258,7 +242,6 @@ def main():
             result = f"loss={sp_loss:.4f}" if math.isfinite(sp_loss) else "diverged"
             print(f"{desc} -> {result}")
 
-        log_gpu_mem(f"After SP w={width}: ")
 
         for lr in mup_lrs:
             run += 1
@@ -276,7 +259,6 @@ def main():
             result = f"loss={mup_loss:.4f}" if math.isfinite(mup_loss) else "diverged"
             print(f"{desc} -> {result}")
 
-        log_gpu_mem(f"After muP w={width}: ")
 
     if not args.no_plot:
         plot_results(sp_results, mup_results, filename=args.output)
