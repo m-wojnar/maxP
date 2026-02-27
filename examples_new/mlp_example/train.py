@@ -29,16 +29,22 @@ from parametrized_mlp import make_parametrized_mlp
 
 # ── Data ────────────────────────────────────────────────────────────────
 
-def load_cifar10(root: str = "./data") -> tuple[torch.Tensor, torch.Tensor]:
-    """Load CIFAR-10 train split as flattened, normalised CPU tensors."""
+def get_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+def load_cifar10(device: torch.device, root: str = "./data") -> tuple[torch.Tensor, torch.Tensor]:
+    """Load CIFAR-10 train split as flattened, normalised tensors on device."""
     ds = datasets.CIFAR10(root=root, train=True, download=True)
     X = torch.tensor(ds.data, dtype=torch.float32) / 255.0
     X = X.permute(0, 3, 1, 2)
     X = transforms.functional.normalize(
         X, mean=(0.4914, 0.4822, 0.4465), std=(0.2470, 0.2435, 0.2616),
     )
-    X = X.reshape(X.shape[0], -1)
-    Y = torch.tensor(ds.targets, dtype=torch.long)
+    X = X.reshape(X.shape[0], -1).to(device)
+    Y = torch.tensor(ds.targets, dtype=torch.long).to(device)
     return X, Y
 
 
@@ -46,7 +52,7 @@ def batch_iter(X: torch.Tensor, Y: torch.Tensor, batch_size: int):
     """Infinite random-batch iterator."""
     n = X.shape[0]
     while True:
-        idx = torch.randint(0, n, (batch_size,))
+        idx = torch.randint(0, n, (batch_size,), device=X.device)
         yield X[idx], Y[idx]
 
 
@@ -65,7 +71,7 @@ def train_sp(
 ) -> float:
     """Train a vanilla MLP (SP) and return the final train loss."""
     torch.manual_seed(seed)
-    model = MLP(hidden_dim=width, n_layers=n_layers)
+    model = MLP(hidden_dim=width, n_layers=n_layers).to(X.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     it = batch_iter(X, Y, batch_size)
     last_loss = float("nan")
@@ -100,6 +106,7 @@ def train_mup(
         n_layers=n_layers,
         lr_prefactor=lr_prefactor,
     )
+    model = model.to(X.device)
     optimizer = torch.optim.Adam(param.param_groups)
     it = batch_iter(X, Y, batch_size)
     last_loss = float("nan")
@@ -192,8 +199,10 @@ def main():
     sp_lrs = np.logspace(np.log10(args.sp_lr_min), np.log10(args.sp_lr_max), args.n_lrs).tolist()
     mup_lrs = np.logspace(np.log10(args.mup_lr_min), np.log10(args.mup_lr_max), args.n_lrs).tolist()
 
+    device = get_device()
+    print(f"Using device: {device}")
     print("Loading CIFAR-10...")
-    X, Y = load_cifar10()
+    X, Y = load_cifar10(device)
 
     sp_results: dict[int, list[tuple[float, float]]] = {}
     mup_results: dict[int, list[tuple[float, float]]] = {}
