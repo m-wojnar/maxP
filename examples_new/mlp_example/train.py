@@ -40,7 +40,7 @@ def log_device_info(device: torch.device):
     print(f"Using device: {device}")
     if device.type == "cuda":
         print(f"  GPU: {torch.cuda.get_device_name(device)}")
-        mem = torch.cuda.get_device_properties(device).total_mem
+        mem = torch.cuda.get_device_properties(device).total_memory
         print(f"  Total memory: {mem / 1024**3:.1f} GB")
 
 
