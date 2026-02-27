@@ -17,6 +17,9 @@ class ParametrizedModule(nn.Module):
         layer_type: ``"embedding"``, ``"hidden"``, or ``"readout"``.
         scale: Output multiplier, set to ``width_dim ** (-a)`` by
             :class:`Parametrization`.
+        alpha: Alignment of the z_0 @ dw^T term, or ``None`` before parametrization.
+        omega: Alignment of the dz @ w_0^T term, or ``None`` before parametrization.
+        u: Alignment of the dz @ dw^T cross term, or ``None`` before parametrization.
     """
 
     def __init__(self, module_or_fn, width_dim: int, layer_type: str = "hidden"):
@@ -29,6 +32,14 @@ class ParametrizedModule(nn.Module):
         self.width_dim = width_dim
         self.layer_type = layer_type
         self.scale = 1.0
+
+        # Alignment (set by Parametrization from preset or measurement)
+        self.alpha: float | None = None
+        self.omega: float | None = None
+        self.u: float | None = None
+        # Initial snapshot for alignment measurement
+        self._z0: torch.Tensor | None = None
+        self._w0: torch.Tensor | None = None
 
     @property
     def weight(self) -> torch.nn.Parameter | None:
