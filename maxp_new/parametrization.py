@@ -12,7 +12,7 @@ from maxp_new.module import ParametrizedModule
 # Alignment assumptions: (alpha, omega, u) per layer
 _ALIGNMENT_PRESETS = {
     "full": (1.0, 0.5, 1.0),
-    "no": (0.0, 0.0, 0.0),
+    "no": (0.5, 0.5, 0.5),
 }
 
 # Default (a, b) per layer type for muP

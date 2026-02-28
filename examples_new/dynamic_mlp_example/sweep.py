@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
-"""LR sweep: Conservative vs muP vs maxP (dynamic) on CIFAR-10 MLP.
+"""LR sweep: SP (SGD) vs maxP dynamic (SGD) on CIFAR-10 MLP.
 
-Sweeps lr_prefactor for each method, picks the best LR per method
+Sweeps lr for each method, picks the best LR per method
 (lowest final smoothed loss), then produces a comparison plot.
 
 Also records per-layer alignment and LR history for the best maxP run.
 
 Usage (CPU, quick test):
-    python sweep.py --steps 500 --lrs 0.001 0.003 0.01
+    python sweep.py --steps 500 --lrs 0.01 0.03 0.1
 
-GPU cluster (full sweep):
-    python sweep.py --width 512 --steps 5000 --seed 42
-    python sweep.py --width 1024 --steps 5000 --seed 42
-
-Custom LR grid:
-    python sweep.py --lrs 0.001 0.003 0.01 0.03 0.1
+Full run:
+    python sweep.py --width 128 --n-layers 4 --steps 2000 --seed 42
 """
 
 import argparse
@@ -26,6 +22,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import datasets, transforms
 from tqdm import tqdm
@@ -61,12 +58,38 @@ def batch_iter(X, Y, batch_size):
         yield X[idx], Y[idx]
 
 
+# ── Plain MLP for SP baseline ─────────────────────────────────────────
+
+class PlainMLP(nn.Module):
+    """Vanilla MLP with standard PyTorch init — no parametrization."""
+
+    def __init__(
+        self,
+        input_dim: int = 3072,
+        hidden_dim: int = 128,
+        n_layers: int = 4,
+        output_dim: int = 10,
+    ):
+        super().__init__()
+        assert n_layers >= 2
+        layers = [nn.Linear(input_dim, hidden_dim, bias=False)]
+        for _ in range(n_layers - 2):
+            layers.append(nn.Linear(hidden_dim, hidden_dim, bias=False))
+        layers.append(nn.Linear(hidden_dim, output_dim, bias=False))
+        self.layers = nn.ModuleList(layers)
+
+    def forward(self, x):
+        for layer in self.layers[:-1]:
+            x = F.relu(layer(x))
+        return self.layers[-1](x)
+
+
 # ── Run result ──────────────────────────────────────────────────────────
 
 @dataclass
 class RunResult:
     method: str
-    lr_prefactor: float
+    lr: float
     losses: list[float]
     layer_history: dict[str, list[dict]] = field(default_factory=dict)
 
@@ -83,16 +106,14 @@ class RunResult:
 
 # ── Training ────────────────────────────────────────────────────────────
 
-def train_static(
-    width, X, Y, *, lr_prefactor, n_steps, n_layers, batch_size, seed,
-    alignment, desc="",
+def train_sp(
+    width, X, Y, *, lr, n_steps, n_layers, batch_size, seed, desc="",
 ) -> RunResult:
+    """SP baseline: plain MLP + SGD + standard PyTorch init."""
     torch.manual_seed(seed)
-    model = ParametrizedMLP(hidden_dim=width, n_layers=n_layers).to(X.device)
-    param = Parametrization(model, lr_prefactor=lr_prefactor, alignment=alignment)
-    optimizer = torch.optim.Adam(param.param_groups)
+    model = PlainMLP(hidden_dim=width, n_layers=n_layers).to(X.device)
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 
-    method = "muP" if alignment == "full" else "Conservative"
     losses = []
     it = batch_iter(X, Y, batch_size)
     pbar = tqdm(range(n_steps), desc=desc, leave=False, ncols=90)
@@ -109,24 +130,26 @@ def train_static(
         loss.backward()
         optimizer.step()
     pbar.close()
-    return RunResult(method=method, lr_prefactor=lr_prefactor, losses=losses)
+    return RunResult(method="SP", lr=lr, losses=losses)
 
 
 def train_maxp(
-    width, X, Y, *, lr_prefactor, n_steps, n_layers, batch_size, seed,
+    width, X, Y, *, lr, n_steps, n_layers, batch_size, seed,
     warmup_steps, solve_interval, sample_size, desc="",
 ) -> RunResult:
+    """maxP dynamic: ParametrizedMLP + SGD + dynamic alignment solving."""
     torch.manual_seed(seed)
     model = ParametrizedMLP(hidden_dim=width, n_layers=n_layers).to(X.device)
     param = Parametrization(
         model,
-        lr_prefactor=lr_prefactor,
+        lr_prefactor=lr,
+        optimizer_type="sgd",
         alignment="full",
         warmup_steps=warmup_steps,
         solve_interval=solve_interval,
         sample_size=sample_size,
     )
-    optimizer = torch.optim.Adam(param.param_groups)
+    optimizer = torch.optim.SGD(param.param_groups, lr=lr)
 
     sample_X = X[:sample_size]
     param.capture_initial(sample_X)
@@ -168,7 +191,7 @@ def train_maxp(
                 })
     pbar.close()
     return RunResult(
-        method="maxP", lr_prefactor=lr_prefactor,
+        method="maxP", lr=lr,
         losses=losses, layer_history=layer_history,
     )
 
@@ -188,40 +211,31 @@ def sweep(
     solve_interval: int,
     sample_size: int,
 ) -> dict[str, list[RunResult]]:
-    """Run all methods at each LR. Returns {method: [RunResult, ...]}."""
+    """Run both methods at each LR. Returns {method: [RunResult, ...]}."""
     results: dict[str, list[RunResult]] = {
-        "Conservative": [],
-        "muP": [],
+        "SP": [],
         "maxP": [],
     }
 
-    total = len(lrs) * 3
+    total = len(lrs) * 2
     run_idx = 0
 
-    for lr in lrs:
+    for lr_val in lrs:
         run_idx += 1
-        print(f"\n[{run_idx}/{total}] Conservative  lr={lr}")
-        results["Conservative"].append(train_static(
-            width, X, Y, lr_prefactor=lr, n_steps=n_steps,
+        print(f"\n[{run_idx}/{total}] SP    lr={lr_val}")
+        results["SP"].append(train_sp(
+            width, X, Y, lr=lr_val, n_steps=n_steps,
             n_layers=n_layers, batch_size=batch_size, seed=seed,
-            alignment="no", desc=f"Cons lr={lr}",
+            desc=f"SP lr={lr_val}",
         ))
 
         run_idx += 1
-        print(f"[{run_idx}/{total}] muP           lr={lr}")
-        results["muP"].append(train_static(
-            width, X, Y, lr_prefactor=lr, n_steps=n_steps,
-            n_layers=n_layers, batch_size=batch_size, seed=seed,
-            alignment="full", desc=f"muP lr={lr}",
-        ))
-
-        run_idx += 1
-        print(f"[{run_idx}/{total}] maxP          lr={lr}")
+        print(f"[{run_idx}/{total}] maxP  lr={lr_val}")
         results["maxP"].append(train_maxp(
-            width, X, Y, lr_prefactor=lr, n_steps=n_steps,
+            width, X, Y, lr=lr_val, n_steps=n_steps,
             n_layers=n_layers, batch_size=batch_size, seed=seed,
             warmup_steps=warmup_steps, solve_interval=solve_interval,
-            sample_size=sample_size, desc=f"maxP lr={lr}",
+            sample_size=sample_size, desc=f"maxP lr={lr_val}",
         ))
 
     return results
@@ -277,8 +291,7 @@ def plot_sweep(
     ax_table = fig.add_subplot(gs[1, 3])
 
     method_style = {
-        "Conservative": {"color": "#7f7f7f", "ls": "-"},
-        "muP": {"color": "#1f77b4", "ls": "-"},
+        "SP": {"color": "#7f7f7f", "ls": "-"},
         "maxP": {"color": "#d62728", "ls": "--"},
     }
 
@@ -291,13 +304,13 @@ def plot_sweep(
         ax_loss.plot(
             range(offset, offset + len(sm)), sm,
             color=st["color"], linewidth=2.2, linestyle=st["ls"],
-            label=f'{method} (lr={run.lr_prefactor})',
+            label=f'{method} (lr={run.lr})',
         )
         ax_log.plot(run.losses, alpha=0.10, color=st["color"], linewidth=0.5)
         ax_log.plot(
             range(offset, offset + len(sm)), sm,
             color=st["color"], linewidth=2.2, linestyle=st["ls"],
-            label=f'{method} (lr={run.lr_prefactor})',
+            label=f'{method} (lr={run.lr})',
         )
 
     # Zoom linear loss
@@ -365,11 +378,11 @@ def plot_sweep(
     # ── Summary table ──
     ax_table.axis("off")
     rows = []
-    for method in ["Conservative", "muP", "maxP"]:
+    for method in ["SP", "maxP"]:
         for run in results[method]:
             rows.append([
                 method,
-                f"{run.lr_prefactor:.4f}",
+                f"{run.lr:.4f}",
                 f"{run.final_loss:.4f}" if not run.diverged else "DIV",
                 "*" if run is best[method] else "",
             ])
@@ -384,7 +397,7 @@ def plot_sweep(
     table.scale(1, 1.2)
     ax_table.set_title("All runs", fontsize=10)
 
-    fig.suptitle("LR Sweep: Conservative vs muP vs maxP — CIFAR-10 MLP", fontsize=14)
+    fig.suptitle("LR Sweep: SP (SGD) vs maxP dynamic (SGD) — CIFAR-10 MLP", fontsize=14)
     fig.savefig(filename, dpi=150, bbox_inches="tight")
     print(f"Plot saved to {filename}")
     plt.close(fig)
@@ -397,16 +410,16 @@ DEFAULT_LRS = [0.001, 0.003, 0.01, 0.03, 0.1]
 
 def main():
     parser = argparse.ArgumentParser(
-        description="LR sweep: Conservative vs muP vs maxP on CIFAR-10 MLP"
+        description="LR sweep: SP (SGD) vs maxP dynamic (SGD) on CIFAR-10 MLP"
     )
-    parser.add_argument("--width", type=int, default=512)
+    parser.add_argument("--width", type=int, default=128)
     parser.add_argument("--n-layers", type=int, default=4)
     parser.add_argument("--steps", type=int, default=2000)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--lrs", type=float, nargs="+", default=DEFAULT_LRS,
-                        help="LR prefactors to sweep")
+                        help="LR values to sweep")
     parser.add_argument("--warmup-steps", type=int, default=50)
-    parser.add_argument("--solve-interval", type=int, default=10)
+    parser.add_argument("--solve-interval", type=int, default=1)
     parser.add_argument("--sample-size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-plot", action="store_true")
@@ -421,7 +434,7 @@ def main():
     print(f"LR sweep: {args.lrs}")
     print(f"maxP: warmup={args.warmup_steps}, interval={args.solve_interval}, "
           f"samples={args.sample_size}")
-    print(f"Total runs: {len(args.lrs) * 3}")
+    print(f"Total runs: {len(args.lrs) * 2}")
     print()
 
     print("Loading CIFAR-10...")
@@ -444,10 +457,10 @@ def main():
 
     # ── Summary ──
     print(f"\n{'='*60}")
-    print(f"  Best of sweep (width={args.width}, steps={args.steps}):")
+    print(f"  Best of sweep (width={args.width}, layers={args.n_layers}, steps={args.steps}):")
     for method, run in best.items():
         tag = "DIV" if run.diverged else f"{run.final_loss:.4f}"
-        print(f"    {method:15s}  lr={run.lr_prefactor:<8.4f}  loss={tag}")
+        print(f"    {method:8s}  lr={run.lr:<8.4f}  loss={tag}")
     print(f"{'='*60}")
 
     if not args.no_plot:
@@ -457,10 +470,10 @@ def main():
         data = {}
         for method, runs in results.items():
             data[method] = [
-                {"lr": r.lr_prefactor, "final_loss": r.final_loss, "diverged": r.diverged}
+                {"lr": r.lr, "final_loss": r.final_loss, "diverged": r.diverged}
                 for r in runs
             ]
-        data["best"] = {m: r.lr_prefactor for m, r in best.items()}
+        data["best"] = {m: r.lr for m, r in best.items()}
         with open(args.save_json, "w") as f:
             json.dump(data, f, indent=2)
         print(f"Results saved to {args.save_json}")

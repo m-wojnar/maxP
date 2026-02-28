@@ -246,9 +246,9 @@ class TestInitialAlignmentOnPM:
         model = SimpleMLP()
         param = Parametrization(model, lr_prefactor=0.01, alignment="no")
         for _, pm in param._pms:
-            assert pm.alpha == 0.0
-            assert pm.omega == 0.0
-            assert pm.u == 0.0
+            assert pm.alpha == 0.5
+            assert pm.omega == 0.5
+            assert pm.u == 0.5
 
 
 class TestStepUpdatesAlignmentOnPM:

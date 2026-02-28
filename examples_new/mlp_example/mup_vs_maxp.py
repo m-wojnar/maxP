@@ -3,7 +3,7 @@
 
 Trains two variants of the same ParametrizedMLP architecture:
 
-  1. Conservative — static "no" alignment (alpha=0, omega=0, u=0).
+  1. Conservative — static "no" alignment (alpha=0.5, omega=0.5, u=0.5).
   2. muP — static "full" alignment (alpha=1, omega=0.5, u=1).
 
 Usage:
