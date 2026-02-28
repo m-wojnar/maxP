@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import datasets, transforms
 from tqdm import tqdm
@@ -58,30 +57,14 @@ def batch_iter(X, Y, batch_size):
         yield X[idx], Y[idx]
 
 
-# ── Plain MLP for SP baseline ─────────────────────────────────────────
-
-class PlainMLP(nn.Module):
-    """Vanilla MLP with standard PyTorch init — no parametrization."""
-
-    def __init__(
-        self,
-        input_dim: int = 3072,
-        hidden_dim: int = 128,
-        n_layers: int = 4,
-        output_dim: int = 10,
-    ):
-        super().__init__()
-        assert n_layers >= 2
-        layers = [nn.Linear(input_dim, hidden_dim, bias=False)]
-        for _ in range(n_layers - 2):
-            layers.append(nn.Linear(hidden_dim, hidden_dim, bias=False))
-        layers.append(nn.Linear(hidden_dim, output_dim, bias=False))
-        self.layers = nn.ModuleList(layers)
-
-    def forward(self, x):
-        for layer in self.layers[:-1]:
-            x = F.relu(layer(x))
-        return self.layers[-1](x)
+# ── SP (a,b) overrides ─────────────────────────────────────────────────
+# SP: a=0 for all layers, b=0 for embedding, b=0.5 for hidden/readout.
+# This matches the definition in paramR/research/configs/lib.py.
+SP_AB = {
+    "embedding": (0.0, 0.0),
+    "hidden":    (0.0, 0.5),
+    "readout":   (0.0, 0.5),
+}
 
 
 # ── Run result ──────────────────────────────────────────────────────────
@@ -107,12 +90,20 @@ class RunResult:
 # ── Training ────────────────────────────────────────────────────────────
 
 def train_sp(
-    width, X, Y, *, lr, n_steps, n_layers, batch_size, seed, desc="",
+    width, X, Y, *, lr, n_steps, n_layers, batch_size, seed,
+    alignment="full", desc="",
 ) -> RunResult:
-    """SP baseline: plain MLP + SGD + standard PyTorch init."""
+    """SP baseline: ParametrizedMLP with SP (a,b) + SGD + static alignment."""
     torch.manual_seed(seed)
-    model = PlainMLP(hidden_dim=width, n_layers=n_layers).to(X.device)
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+    model = ParametrizedMLP(hidden_dim=width, n_layers=n_layers).to(X.device)
+    param = Parametrization(
+        model,
+        lr_prefactor=lr,
+        optimizer_type="sgd",
+        alignment=alignment,
+        ab_overrides=SP_AB,
+    )
+    optimizer = torch.optim.SGD(param.param_groups, lr=lr)
 
     losses = []
     it = batch_iter(X, Y, batch_size)
