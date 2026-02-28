@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LR sweep: SP (SGD) vs maxP dynamic (SGD) on CIFAR-10 MLP.
+"""LR sweep: SP vs muP vs maxP dynamic (SGD) on CIFAR-10 MLP.
 
 Sweeps lr for each method, picks the best LR per method
 (lowest final smoothed loss), then produces a comparison plot.
@@ -124,6 +124,40 @@ def train_sp(
     return RunResult(method="SP", lr=lr, losses=losses)
 
 
+def train_mup(
+    width, X, Y, *, lr, n_steps, n_layers, batch_size, seed,
+    alignment="full", desc="",
+) -> RunResult:
+    """muP baseline: ParametrizedMLP with default muP (a,b) + SGD + static alignment."""
+    torch.manual_seed(seed)
+    model = ParametrizedMLP(hidden_dim=width, n_layers=n_layers).to(X.device)
+    param = Parametrization(
+        model,
+        lr_prefactor=lr,
+        optimizer_type="sgd",
+        alignment=alignment,
+    )
+    optimizer = torch.optim.SGD(param.param_groups, lr=lr)
+
+    losses = []
+    it = batch_iter(X, Y, batch_size)
+    pbar = tqdm(range(n_steps), desc=desc, leave=False, ncols=90)
+    for _ in pbar:
+        xb, yb = next(it)
+        logits = model(xb)
+        loss = F.cross_entropy(logits, yb)
+        if not math.isfinite(loss.item()):
+            losses.append(float("nan"))
+            break
+        losses.append(loss.item())
+        pbar.set_postfix(loss=f"{loss.item():.4f}")
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+    pbar.close()
+    return RunResult(method="muP", lr=lr, losses=losses)
+
+
 def train_maxp(
     width, X, Y, *, lr, n_steps, n_layers, batch_size, seed,
     warmup_steps, solve_interval, sample_size, desc="",
@@ -202,13 +236,14 @@ def sweep(
     solve_interval: int,
     sample_size: int,
 ) -> dict[str, list[RunResult]]:
-    """Run both methods at each LR. Returns {method: [RunResult, ...]}."""
+    """Run all methods at each LR. Returns {method: [RunResult, ...]}."""
     results: dict[str, list[RunResult]] = {
         "SP": [],
+        "muP": [],
         "maxP": [],
     }
 
-    total = len(lrs) * 2
+    total = len(lrs) * 3
     run_idx = 0
 
     for lr_val in lrs:
@@ -218,6 +253,14 @@ def sweep(
             width, X, Y, lr=lr_val, n_steps=n_steps,
             n_layers=n_layers, batch_size=batch_size, seed=seed,
             desc=f"SP lr={lr_val}",
+        ))
+
+        run_idx += 1
+        print(f"[{run_idx}/{total}] muP   lr={lr_val}")
+        results["muP"].append(train_mup(
+            width, X, Y, lr=lr_val, n_steps=n_steps,
+            n_layers=n_layers, batch_size=batch_size, seed=seed,
+            desc=f"muP lr={lr_val}",
         ))
 
         run_idx += 1
@@ -283,6 +326,7 @@ def plot_sweep(
 
     method_style = {
         "SP": {"color": "#7f7f7f", "ls": "-"},
+        "muP": {"color": "#1f77b4", "ls": "-"},
         "maxP": {"color": "#d62728", "ls": "--"},
     }
 
@@ -369,7 +413,7 @@ def plot_sweep(
     # ── Summary table ──
     ax_table.axis("off")
     rows = []
-    for method in ["SP", "maxP"]:
+    for method in ["SP", "muP", "maxP"]:
         for run in results[method]:
             rows.append([
                 method,
@@ -388,7 +432,7 @@ def plot_sweep(
     table.scale(1, 1.2)
     ax_table.set_title("All runs", fontsize=10)
 
-    fig.suptitle("LR Sweep: SP (SGD) vs maxP dynamic (SGD) — CIFAR-10 MLP", fontsize=14)
+    fig.suptitle("LR Sweep: SP vs muP vs maxP dynamic (SGD) — CIFAR-10 MLP", fontsize=14)
     fig.savefig(filename, dpi=150, bbox_inches="tight")
     print(f"Plot saved to {filename}")
     plt.close(fig)
@@ -401,7 +445,7 @@ DEFAULT_LRS = [0.01, 0.03, 0.1, 0.3, 1.0]
 
 def main():
     parser = argparse.ArgumentParser(
-        description="LR sweep: SP (SGD) vs maxP dynamic (SGD) on CIFAR-10 MLP"
+        description="LR sweep: SP vs muP vs maxP dynamic (SGD) on CIFAR-10 MLP"
     )
     parser.add_argument("--width", type=int, default=128)
     parser.add_argument("--n-layers", type=int, default=4)
@@ -425,7 +469,7 @@ def main():
     print(f"LR sweep: {args.lrs}")
     print(f"maxP: warmup={args.warmup_steps}, interval={args.solve_interval}, "
           f"samples={args.sample_size}")
-    print(f"Total runs: {len(args.lrs) * 2}")
+    print(f"Total runs: {len(args.lrs) * 3}")
     print()
 
     print("Loading CIFAR-10...")
