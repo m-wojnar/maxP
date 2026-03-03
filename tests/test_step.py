@@ -251,6 +251,74 @@ class TestInitialAlignmentOnPM:
             assert pm.u == 0.5
 
 
+class TestStepInfeasibleLP:
+    """When the LP solver fails, step() should keep previous LRs and not crash."""
+
+    def test_extreme_alignment_is_infeasible(self):
+        """Directly confirm that extreme alignment values make the LP infeasible."""
+        model, param, optimizer, X = _setup()
+
+        # Set extreme alignment on all PMs
+        for _, pm in param._pms:
+            if pm.weight is not None:
+                pm.alpha = 100.0
+                pm.omega = 100.0
+                pm.u = 100.0
+
+        with pytest.raises(ValueError, match="infeasible|optimal"):
+            param._resolve_chain()
+
+    def test_infeasible_lp_keeps_previous_lrs(self):
+        """step() catches infeasible LP and leaves LRs unchanged."""
+        from unittest.mock import patch
+
+        model, param, optimizer, X = _setup()
+        param.capture_initial(X)
+
+        # Train a few steps so step() passes warmup
+        for _ in range(5):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+
+        lrs_before = [g["lr"] for g in param.param_groups]
+
+        # Patch the resolver to raise ValueError (simulating infeasible LP)
+        with patch.object(param, "_resolve_chain",
+                          side_effect=ValueError("infeasible")):
+            param.step(X, optimizer)
+
+        lrs_after = [g["lr"] for g in param.param_groups]
+        assert lrs_after == lrs_before
+
+    def test_infeasible_then_recovers(self):
+        """After an infeasible step, a subsequent normal step updates LRs."""
+        from unittest.mock import patch
+
+        model, param, optimizer, X = _setup(warmup_steps=0)
+        param.capture_initial(X)
+
+        for _ in range(5):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+
+        lrs_before = [g["lr"] for g in param.param_groups]
+
+        # First step: infeasible → LRs unchanged
+        with patch.object(param, "_resolve_chain",
+                          side_effect=ValueError("infeasible")):
+            param.step(X, optimizer)
+        assert [g["lr"] for g in param.param_groups] == lrs_before
+
+        # Second step: normal → LRs may update
+        param.step(X, optimizer)
+        for g in param.param_groups:
+            assert g["lr"] > 0
+
+
 class TestStepUpdatesAlignmentOnPM:
     """After step(), each weight-bearing PM should have finite alignment values."""
 
