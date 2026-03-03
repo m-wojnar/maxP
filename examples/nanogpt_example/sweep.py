@@ -500,7 +500,7 @@ def main():
     parser.add_argument("--n-heads", type=int, default=4)
     parser.add_argument("--n-layers", type=int, default=4)
     parser.add_argument("--seq-len", type=int, default=64)
-    parser.add_argument("--steps", type=int, default=2000)
+    parser.add_argument("--steps", type=int, default=4000)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lrs", type=float, nargs="+", default=DEFAULT_LRS,
                         help="LR values to sweep")
