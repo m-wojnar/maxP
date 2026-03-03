@@ -6,10 +6,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from maxp_new.dag import MergeType, DagNode, OpGraph, trace_pm_dag
-from maxp_new.module import ParametrizedModule
-from maxp_new.parametrization import Parametrization
-from maxp_new.solver import find_c_adam, find_c_dag_adam, find_c_dag_sgd, find_c_dag
+from maxp.dag import MergeType, DagNode, OpGraph, trace_pm_dag
+from maxp.module import ParametrizedModule
+from maxp.parametrization import Parametrization
+from maxp.solver import find_c_adam, find_c_dag_adam, find_c_dag_sgd, find_c_dag
 
 
 # ---------------------------------------------------------------------------

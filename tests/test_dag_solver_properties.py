@@ -17,9 +17,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from maxp_new.dag import DagNode, OpGraph, MergeType, trace_pm_dag
-from maxp_new.module import ParametrizedModule
-from maxp_new.solver import find_c_adam, find_c_dag_adam, find_c_dag_sgd
+from maxp.dag import DagNode, OpGraph, MergeType, trace_pm_dag
+from maxp.module import ParametrizedModule
+from maxp.solver import find_c_adam, find_c_dag_adam, find_c_dag_sgd
 
 
 # ---------------------------------------------------------------------------

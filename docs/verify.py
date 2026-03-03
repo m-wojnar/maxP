@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Comprehensive verification of every maxp_new component.
+Comprehensive verification of every maxp component.
 
 Run from repo root:
     python docs/verify.py
@@ -14,7 +14,7 @@ import math
 import sys
 import os
 
-# Ensure maxp_new is importable from repo root
+# Ensure maxp is importable from repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np
@@ -55,7 +55,7 @@ def assert_check(label, condition, detail=""):
 
 section("1. LP Solver — Known Parametrization Recovery")
 
-from maxp_new.solver import find_c
+from maxp.solver import find_c
 
 print("The LP solver takes (a, b) per layer and alignment (alpha, omega, u)")
 print("and returns optimal c values. We verify it recovers known results.\n")
@@ -310,13 +310,13 @@ for trial in range(3):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 5. SOLVER: old maxp vs new maxp_new cross-validation
+# 5. SOLVER: old maxp vs new maxp cross-validation
 # ═══════════════════════════════════════════════════════════════════════════
 
-section("5. LP Solver — Old maxp vs New maxp_new Cross-Validation")
+section("5. LP Solver — Old maxp vs New maxp Cross-Validation")
 
 from maxp.solver import find_c as find_c_old
-from maxp_new.solver import find_c as find_c_new
+from maxp.solver import find_c as find_c_new
 
 print("Run both solvers on identical randomized inputs and verify they")
 print("produce the same c values. The old maxp solver is the trusted")
@@ -375,7 +375,7 @@ print(f"  Ran {n_match + n_mismatch} valid trials ({N_XVAL_TRIALS} attempted, "
       f"{n_skip} skipped as infeasible)")
 print(f"  Matched: {n_match}, Mismatched: {n_mismatch}")
 assert_check(
-    f"all {n_match} trials: old maxp == new maxp_new",
+    f"all {n_match} trials: old maxp == new maxp",
     n_mismatch == 0,
 )
 
@@ -412,7 +412,7 @@ for trial in range(5):
 
 section("6. ParametrizedModule — Attributes & Forward")
 
-from maxp_new.module import ParametrizedModule
+from maxp.module import ParametrizedModule
 
 print("--- Module wrapping ---")
 linear = nn.Linear(16, 32, bias=False)
@@ -458,7 +458,7 @@ assert_check("callable forward works", out.shape == (2, 3))
 
 section("7. Parametrization Init — Scale, Init Variance, LR")
 
-from maxp_new.parametrization import Parametrization
+from maxp.parametrization import Parametrization
 
 class MLP3(nn.Module):
     def __init__(self, d=128):
@@ -586,7 +586,7 @@ assert_check(
 
 section("9. Alignment Computation — compute_alignment()")
 
-from maxp_new.alignment import compute_alignment
+from maxp.alignment import compute_alignment
 
 print("--- No change → zero alignment ---")
 torch.manual_seed(0)
@@ -705,8 +705,8 @@ for our, opt_g in zip(param.param_groups, opt.param_groups):
 
 section("11. DAG Solver — Matches Chain for Linear Model")
 
-from maxp_new.dag import trace_pm_dag
-from maxp_new.solver import find_c_dag
+from maxp.dag import trace_pm_dag
+from maxp.solver import find_c_dag
 
 print("For a linear chain (no forks/merges), the DAG solver should give")
 print("the same c values as the chain solver.\n")
@@ -1019,7 +1019,7 @@ ax.set_title("Per-layer LR during training")
 ax.legend(fontsize="small")
 ax.grid(True, alpha=0.3)
 
-fig.suptitle("maxp_new Verification Diagnostics", fontsize=14)
+fig.suptitle("maxp Verification Diagnostics", fontsize=14)
 fig.tight_layout()
 plot_path = os.path.join(os.path.dirname(__file__), "verify_plots.png")
 fig.savefig(plot_path, dpi=150, bbox_inches="tight")

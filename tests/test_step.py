@@ -6,8 +6,8 @@ import pytest
 import torch
 import torch.nn as nn
 
-from maxp_new.module import ParametrizedModule
-from maxp_new.parametrization import Parametrization
+from maxp.module import ParametrizedModule
+from maxp.parametrization import Parametrization
 
 
 # ---------------------------------------------------------------------------

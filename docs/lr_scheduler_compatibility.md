@@ -56,7 +56,7 @@ maxp_scheduler.step(X)
 
 This lets CosineAnnealingLR, LinearLR, etc. control the envelope while maxP handles per-layer ratios.
 
-## Plan for `maxp_new`
+## Plan for `maxp`
 
 Simplest approach: add a `schedule_multiplier` to `Parametrization.step()` or adopt the `ChainedMaxPScheduler` pattern. The key change in `step()`:
 

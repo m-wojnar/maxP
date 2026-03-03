@@ -1,7 +1,7 @@
 # maxp\_new Verification Document
 
 This document provides section-by-section evidence that every component of
-`maxp_new` works correctly. Each section includes the reasoning, the expected
+`maxp` works correctly. Each section includes the reasoning, the expected
 behavior, and proof — either via inline outputs or commands you can run yourself.
 
 A companion script `docs/verify.py` runs all checks automatically:
@@ -22,7 +22,7 @@ with 6 diagnostic visualizations.
 2. [LP Solver — Constraint Satisfaction](#2-lp-solver--constraint-satisfaction)
 3. [LP Solver — Optimality Proof](#3-lp-solver--optimality-proof)
 4. [LP Solver — Randomized Stress Test](#4-lp-solver--randomized-stress-test)
-5. [LP Solver — Old maxp vs New maxp\_new Cross-Validation](#5-lp-solver--old-maxp-vs-new-maxp_new-cross-validation)
+5. [LP Solver — Old maxp vs New maxp\_new Cross-Validation](#5-lp-solver--old-maxp-vs-new-maxp-cross-validation)
 6. [ParametrizedModule — Attributes & Forward](#6-parametrizedmodule--attributes--forward)
 7. [Parametrization Init — Scale, Init Variance, LR](#7-parametrization-init--scale-init-variance-lr)
 8. [Per-PM Chain Solving](#8-per-pm-chain-solving)
@@ -83,7 +83,7 @@ violate stability-at-init (e.g., embedding with `a+b != 0`).
 
 **Reproduce:**
 ```python
-from maxp_new.solver import find_c
+from maxp.solver import find_c
 cl, rl = find_c([-0.5, 0.0, 0.5], [0.5, 0.5, 0.5],
                 [1.0]*3, [0.5]*3, [1.0]*3, optimizer_type="adam")
 print(cl)  # [0.5, 1.0, 0.5]
@@ -186,7 +186,7 @@ Every trial — including chains up to 20 layers deep with widely varying
 
 **Reproduce:**
 ```python
-from maxp_new.solver import find_c
+from maxp.solver import find_c
 import random
 rng = random.Random(2024)
 
@@ -209,12 +209,12 @@ assert all(r >= -1e-9 for r in rl)
 
 ## 5. LP Solver — Old maxp vs New maxp\_new Cross-Validation
 
-**What we're testing:** The new `maxp_new.solver.find_c` produces identical
+**What we're testing:** The new `maxp.solver.find_c` produces identical
 results to the old, trusted `maxp.solver.find_c` across a wide range of
 randomized inputs. The old solver is the known-good reference implementation
 for sequential (chain) models.
 
-**Why this matters:** The new `maxp_new` package rewrites the calling code
+**Why this matters:** The new `maxp` package rewrites the calling code
 around `find_c` (per-PM solving, DAG support, etc.). This test ensures the
 core LP solver itself was not altered or broken during the rewrite — for any
 valid chain input, both implementations must agree.
@@ -246,7 +246,7 @@ solver is a faithful copy of the old one.
 **Reproduce:**
 ```python
 from maxp.solver import find_c as find_c_old
-from maxp_new.solver import find_c as find_c_new
+from maxp.solver import find_c as find_c_new
 
 al = [-0.5, 0.0, 0.0, 0.5]
 bl = [0.5, 0.5, 0.5, 0.5]
@@ -617,7 +617,7 @@ All 16 sections pass. The key findings:
    `(a, b)`, and random alignment all produce stable, deterministic solutions.
 
 3. **New solver matches old solver:** 100 randomized cross-validation trials
-   (both Adam and SGD, 3–20 layers) confirm that `maxp_new.solver.find_c`
+   (both Adam and SGD, 3–20 layers) confirm that `maxp.solver.find_c`
    produces bit-identical results to the trusted `maxp.solver.find_c`.
 
 4. **Parametrization init is correct:** Scales, init variance, and LRs all
