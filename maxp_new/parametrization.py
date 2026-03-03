@@ -325,11 +325,14 @@ class Parametrization:
                 z0, w0, z, w, fan_in=pm.width_dim, norm_mode=self._norm_mode
             )
 
-        # 3. Re-solve LP
-        if self._use_dag:
-            c_by_name = self._resolve_dag()
-        else:
-            c_by_name = self._resolve_chain()
+        # 3. Re-solve LP (skip update if infeasible with current alignment)
+        try:
+            if self._use_dag:
+                c_by_name = self._resolve_dag()
+            else:
+                c_by_name = self._resolve_chain()
+        except ValueError:
+            return
 
         # 4. Update param groups
         for group in self._param_groups:
