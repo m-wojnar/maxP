@@ -293,18 +293,24 @@ def sweep(
     total = len(lrs) * 3
     run_idx = 0
 
+    def _report(run: RunResult):
+        tag = "DIV" if run.diverged else f"{run.final_loss:.4f}"
+        print(f"  → final_loss={tag}")
+
     for lr_val in lrs:
         run_idx += 1
         print(f"\n[{run_idx}/{total}] SP    lr={lr_val}")
         results["SP"].append(train_sp(
             **common, lr=lr_val, desc=f"SP lr={lr_val}",
         ))
+        _report(results["SP"][-1])
 
         run_idx += 1
         print(f"[{run_idx}/{total}] muP   lr={lr_val}")
         results["muP"].append(train_mup(
             **common, lr=lr_val, desc=f"muP lr={lr_val}",
         ))
+        _report(results["muP"][-1])
 
         run_idx += 1
         print(f"[{run_idx}/{total}] maxP  lr={lr_val}")
@@ -313,6 +319,7 @@ def sweep(
             warmup_steps=warmup_steps, solve_interval=solve_interval,
             sample_size=sample_size, desc=f"maxP lr={lr_val}",
         ))
+        _report(results["maxP"][-1])
 
     return results
 
