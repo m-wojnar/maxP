@@ -134,7 +134,9 @@ class Parametrization:
 
         for name, pm in pms:
             lt = pm.layer_type
-            a, b = ab[lt]
+            a_default, b_default = ab[lt]
+            a = pm.a if pm.a is not None else a_default
+            b = pm.b if pm.b is not None else b_default
             fan_in = pm.width_dim
             has_params = pm.weight is not None
 
@@ -239,6 +241,9 @@ class Parametrization:
         for name, pm in self._pms:
             if pm.inner is None:
                 continue
+            # Skip nn.Embedding: input is discrete indices, not activations
+            if isinstance(pm.inner, nn.Embedding):
+                continue
 
             def _hook(mod, inp, out, _name=name):
                 captured[_name] = inp[0].detach().clone()[:sample_size]
@@ -291,6 +296,9 @@ class Parametrization:
 
         for name, pm in self._pms:
             if pm.inner is None:
+                continue
+            # Skip nn.Embedding: input is discrete indices, not activations
+            if isinstance(pm.inner, nn.Embedding):
                 continue
 
             def _hook(mod, inp, out, _name=name):
@@ -345,8 +353,8 @@ class Parametrization:
         weighted = [(name, pm) for name, pm in self._pms if pm.weight is not None]
 
         if len(weighted) >= 2:
-            al = [self._ab[pm.layer_type][0] for _, pm in weighted]
-            bl = [self._ab[pm.layer_type][1] for _, pm in weighted]
+            al = [pm.a if pm.a is not None else self._ab[pm.layer_type][0] for _, pm in weighted]
+            bl = [pm.b if pm.b is not None else self._ab[pm.layer_type][1] for _, pm in weighted]
             alpha = [pm.alpha for _, pm in weighted]
             omega = [pm.omega for _, pm in weighted]
             u = [pm.u for _, pm in weighted]
@@ -396,8 +404,8 @@ class Parametrization:
         weighted = [(name, pm) for name, pm in pms if pm.weight is not None]
 
         if len(weighted) >= 2:
-            chain_al = [ab[pm.layer_type][0] for _, pm in weighted]
-            chain_bl = [ab[pm.layer_type][1] for _, pm in weighted]
+            chain_al = [pm.a if pm.a is not None else ab[pm.layer_type][0] for _, pm in weighted]
+            chain_bl = [pm.b if pm.b is not None else ab[pm.layer_type][1] for _, pm in weighted]
             n = len(chain_al)
             chain_cl, _ = find_c(
                 chain_al, chain_bl,
