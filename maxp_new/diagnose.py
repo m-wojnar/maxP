@@ -110,11 +110,13 @@ def _default_train_step(model, param_groups):
     else:
         opt = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
+    # Fixed sample — same data every step to induce alignment
+    x_fixed = torch.randint(0, vocab_size, (16, 32))
+    targets_fixed = torch.randint(0, vocab_size, (16, 32))
+
     def step(model, step_idx):
-        x = torch.randint(0, vocab_size, (16, 32))
-        targets = torch.randint(0, vocab_size, (16, 32))
-        logits = model(x)
-        loss = F.cross_entropy(logits.reshape(-1, vocab_size), targets.reshape(-1))
+        logits = model(x_fixed)
+        loss = F.cross_entropy(logits.reshape(-1, vocab_size), targets_fixed.reshape(-1))
         loss.backward()
         opt.step()
         opt.zero_grad()

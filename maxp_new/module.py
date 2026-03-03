@@ -11,10 +11,21 @@ class ParametrizedModule(nn.Module):
     standard ``parameters()`` walk) or a bare callable (e.g. ``lambda q, k:
     q @ k.T``, which has no learnable parameters).
 
-    Attributes:
-        inner: The wrapped ``nn.Module``, or ``None`` for bare callables.
+    Args:
+        module_or_fn: An ``nn.Module`` or bare callable to wrap.
         width_dim: Fan-in for this op (the dimension that scales with width).
         layer_type: ``"embedding"``, ``"hidden"``, or ``"readout"``.
+        a: Optional override for the output multiplier exponent.
+            If set, :class:`Parametrization` will use this value instead of
+            looking up the default for ``layer_type``.  Useful for ops that
+            need non-standard scaling (e.g. ``a=1.0`` for muP attention
+            logits QK^T → 1/d scaling instead of the readout default 1/√d).
+        b: Optional override for the init variance exponent.
+            If set, :class:`Parametrization` will use this value instead of
+            the default.
+
+    Attributes:
+        inner: The wrapped ``nn.Module``, or ``None`` for bare callables.
         scale: Output multiplier, set to ``width_dim ** (-a)`` by
             :class:`Parametrization`.
         alpha: Alignment of the z_0 @ dw^T term, or ``None`` before parametrization.
@@ -22,7 +33,15 @@ class ParametrizedModule(nn.Module):
         u: Alignment of the dz @ dw^T cross term, or ``None`` before parametrization.
     """
 
-    def __init__(self, module_or_fn, width_dim: int, layer_type: str = "hidden"):
+    def __init__(
+        self,
+        module_or_fn,
+        width_dim: int,
+        layer_type: str = "hidden",
+        *,
+        a: float | None = None,
+        b: float | None = None,
+    ):
         super().__init__()
         if isinstance(module_or_fn, nn.Module):
             self.inner = module_or_fn
@@ -32,6 +51,10 @@ class ParametrizedModule(nn.Module):
         self.width_dim = width_dim
         self.layer_type = layer_type
         self.scale = 1.0
+
+        # Per-PM (a, b) overrides — Parametrization respects these if set
+        self.a: float | None = a
+        self.b: float | None = b
 
         # Alignment (set by Parametrization from preset or measurement)
         self.alpha: float | None = None
