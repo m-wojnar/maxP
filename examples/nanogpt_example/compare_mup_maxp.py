@@ -16,10 +16,8 @@ import hashlib
 import json
 import math
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -29,13 +27,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from examples.nanogpt_example.parametrized_gpt import ParametrizedGPT
 from examples.nanogpt_example.sweep import (
     RunResult,
-    _LAYER_COLORS,
-    _short_name,
     batch_iter,
     get_device,
     load_shakespeare,
-    smooth,
 )
+from examples.nanogpt_example.replot import plot_comparison
 from maxp import Parametrization
 
 
@@ -226,149 +222,6 @@ def train_maxp(
         method="maxP", lr=lr,
         losses=losses, layer_history=layer_history,
     )
-
-
-# ── Plotting ─────────────────────────────────────────────────────────────
-
-def plot_comparison(
-    mup_result: RunResult,
-    maxp_result: RunResult,
-    n_steps: int,
-    warmup: int,
-    decay: int,
-    filename: str = "compare_mup_maxp.png",
-    window: int = 50,
-):
-    import matplotlib.pyplot as plt
-
-    has_hist = bool(maxp_result.layer_history)
-
-    fig = plt.figure(figsize=(18, 10))
-    gs = fig.add_gridspec(2, 4, hspace=0.35, wspace=0.35)
-
-    ax_loss = fig.add_subplot(gs[0, 0:2])
-    ax_log = fig.add_subplot(gs[0, 2])
-    ax_lr = fig.add_subplot(gs[0, 3])
-    ax_alpha = fig.add_subplot(gs[1, 0])
-    ax_omega = fig.add_subplot(gs[1, 1])
-    ax_u = fig.add_subplot(gs[1, 2])
-    ax_table = fig.add_subplot(gs[1, 3])
-
-    method_style = {
-        "muP": {"color": "#1f77b4", "ls": "-"},
-        "maxP": {"color": "#d62728", "ls": "--"},
-    }
-
-    # ── Loss curves ──
-    offset = window // 2
-    for run in [mup_result, maxp_result]:
-        st = method_style[run.method]
-        sm = smooth(run.losses, window)
-        ax_loss.plot(run.losses, alpha=0.10, color=st["color"], linewidth=0.5)
-        ax_loss.plot(
-            range(offset, offset + len(sm)), sm,
-            color=st["color"], linewidth=2.2, linestyle=st["ls"],
-            label=run.method,
-        )
-        ax_log.plot(run.losses, alpha=0.10, color=st["color"], linewidth=0.5)
-        ax_log.plot(
-            range(offset, offset + len(sm)), sm,
-            color=st["color"], linewidth=2.2, linestyle=st["ls"],
-            label=run.method,
-        )
-
-    # Zoom linear loss
-    all_losses = mup_result.losses + maxp_result.losses
-    finite = [v for v in all_losses if math.isfinite(v)]
-    if finite:
-        lo, hi = np.percentile(finite, 1), np.percentile(finite, 95)
-        pad = 0.10 * (hi - lo)
-        ax_loss.set_ylim(max(0, lo - pad), hi + pad)
-
-    ax_loss.set_xlabel("Step")
-    ax_loss.set_ylabel("Train Loss")
-    ax_loss.set_title("Loss: muP vs maxP (WSD schedule)")
-    ax_loss.legend(fontsize="small")
-    ax_loss.grid(True, alpha=0.3)
-
-    ax_log.set_xlabel("Step")
-    ax_log.set_ylabel("Train Loss (log)")
-    ax_log.set_yscale("log")
-    ax_log.set_title("Log scale")
-    ax_log.legend(fontsize="x-small")
-    ax_log.grid(True, alpha=0.3)
-
-    # ── WSD schedule overlay on loss plot ──
-    sched_steps = list(range(n_steps))
-    sched_vals = [wsd_factor(s, n_steps, warmup=warmup, decay=decay) for s in sched_steps]
-    ax_sched = ax_loss.twinx()
-    ax_sched.plot(sched_steps, sched_vals, color="gray", ls=":", lw=1.0, alpha=0.5, label="WSD schedule")
-    ax_sched.set_ylabel("Schedule factor", color="gray", fontsize=8)
-    ax_sched.set_ylim(-0.05, 1.15)
-    ax_sched.tick_params(axis="y", labelcolor="gray", labelsize=7)
-
-    # ── Per-layer alignment + LR for maxP ──
-    if has_hist:
-        hist = maxp_result.layer_history
-        names = list(hist.keys())
-        colors = {n: _LAYER_COLORS[i % len(_LAYER_COLORS)] for i, n in enumerate(names)}
-
-        for name, history in hist.items():
-            steps = range(len(history))
-            short = _short_name(name)
-            c = colors[name]
-            ax_alpha.plot(steps, [h["alpha"] for h in history], color=c, lw=1.2, label=short)
-            ax_omega.plot(steps, [h["omega"] for h in history], color=c, lw=1.2, label=short)
-            ax_u.plot(steps, [h["u"] for h in history], color=c, lw=1.2, label=short)
-            ax_lr.plot(steps, [h["lr"] for h in history], color=c, lw=1.2, label=short)
-
-        for ax, ref, lbl in [
-            (ax_alpha, 1.0, "full=1.0"), (ax_omega, 0.5, "full=0.5"), (ax_u, 1.0, "full=1.0"),
-        ]:
-            ax.axhline(ref, color="k", ls=":", lw=0.8, alpha=0.5, label=lbl)
-
-        for ax, key in [(ax_alpha, "alpha"), (ax_omega, "omega"), (ax_u, "u"), (ax_lr, "lr")]:
-            all_vals = []
-            for history in hist.values():
-                all_vals.extend(h[key] for h in history if math.isfinite(h[key]))
-            if all_vals:
-                lo, hi = np.percentile(all_vals, 1), np.percentile(all_vals, 99)
-                pad = 0.15 * max(hi - lo, 1e-8)
-                ax.set_ylim(lo - pad, hi + pad)
-
-    for ax, title, ylabel in [
-        (ax_alpha, r"$\alpha$ (z₀ @ $\Delta$w)", r"$\alpha$"),
-        (ax_omega, r"$\omega$ ($\Delta$z @ w₀)", r"$\omega$"),
-        (ax_u, r"$u$ ($\Delta$z @ $\Delta$w)", r"$u$"),
-        (ax_lr, "Per-layer LR (maxP)", "LR"),
-    ]:
-        ax.set_xlabel("Step")
-        ax.set_ylabel(ylabel)
-        ax.set_title(title)
-        ax.legend(fontsize="x-small", ncol=2)
-        ax.grid(True, alpha=0.3)
-
-    # ── Summary table ──
-    ax_table.axis("off")
-    rows = []
-    for run in [mup_result, maxp_result]:
-        tag = f"{run.final_loss:.4f}" if not run.diverged else "DIV"
-        rows.append([run.method, f"{run.lr}", tag])
-    table = ax_table.table(
-        cellText=rows,
-        colLabels=["Method", "LR", "Final Loss"],
-        loc="center",
-        cellLoc="center",
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(9)
-    table.scale(1, 1.4)
-    ax_table.set_title("Results", fontsize=10)
-
-    fig.suptitle("muP vs maxP (WSD schedule) — Shakespeare GPT", fontsize=14)
-    fig.savefig(filename, dpi=150, bbox_inches="tight")
-    print(f"Plot saved to {filename}")
-    plt.close(fig)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────
