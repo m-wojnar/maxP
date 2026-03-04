@@ -8,7 +8,7 @@ Usage:
     python compare_mup_maxp.py
     python compare_mup_maxp.py --steps 5000 --d-model 256
     # Quick smoke test:
-    python compare_mup_maxp.py --d-model 128 --n-layers 4 --n-heads 4 --steps 500 --warmup 50 --decay 100 --warmup-steps 50
+    python compare_mup_maxp.py --d-model 128 --n-layers 4 --n-heads 4 --steps 500 --warmup 50 --decay 100 --alignment-warmup 5
 """
 
 import argparse
@@ -153,7 +153,7 @@ def train_mup(
 def train_maxp(
     d_model, n_heads, n_layers, d_ff, data, vocab_size, *,
     lr, n_steps, seq_len, batch_size, seed,
-    warmup, decay, warmup_steps, solve_interval, sample_size,
+    warmup, decay, alignment_warmup, solve_interval, sample_size,
 ) -> RunResult:
     """maxP with WSD schedule (dynamic alignment)."""
     device = data.device
@@ -165,7 +165,7 @@ def train_maxp(
         lr_prefactor=lr,
         optimizer_type="adam",
         alignment="full",
-        warmup_steps=warmup_steps,
+        warmup_steps=alignment_warmup,
         solve_interval=solve_interval,
         sample_size=sample_size,
         sample_input=sample_input,
@@ -389,8 +389,8 @@ def main():
                         help="WSD warmup steps")
     parser.add_argument("--decay", type=int, default=1000,
                         help="WSD decay steps (at end of training)")
-    parser.add_argument("--warmup-steps", type=int, default=10,
-                        help="maxP alignment warmup steps (before first LP re-solve)")
+    parser.add_argument("--alignment-warmup", type=int, default=10,
+                        help="Steps before first alignment LP re-solve")
     parser.add_argument("--solve-interval", type=int, default=1)
     parser.add_argument("--sample-size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
@@ -406,7 +406,7 @@ def main():
           f"n_layers={args.n_layers}, d_ff={d_ff}, seq_len={args.seq_len}")
     print(f"LR={args.lr}, steps={args.steps}, batch_size={args.batch_size}")
     print(f"WSD: warmup={args.warmup}, decay={args.decay}")
-    print(f"maxP: warmup_steps={args.warmup_steps}, "
+    print(f"maxP: alignment_warmup={args.alignment_warmup}, "
           f"solve_interval={args.solve_interval}, sample_size={args.sample_size}")
     print()
 
@@ -433,7 +433,7 @@ def main():
 
     # ── maxP (run first — slower, want to cache early) ──
     maxp_hparams = {**cache_hparams,
-                    "warmup_steps": args.warmup_steps,
+                    "alignment_warmup": args.alignment_warmup,
                     "solve_interval": args.solve_interval,
                     "sample_size": args.sample_size}
     maxp_key = _cache_key("maxP", **maxp_hparams)
@@ -445,8 +445,9 @@ def main():
         print(f"\n[1/2] Training maxP + WSD...")
         maxp_result = train_maxp(
             **common,
-            warmup_steps=args.warmup_steps,
+            alignment_warmup=args.alignment_warmup,
             solve_interval=args.solve_interval,
+
             sample_size=args.sample_size,
         )
         _save_result(maxp_cache, maxp_result)
