@@ -431,20 +431,7 @@ def main():
         warmup=args.warmup, decay=args.decay,
     )
 
-    # ── muP ──
-    mup_key = _cache_key("muP", **cache_hparams)
-    mup_cache = _cache_path(cache_dir, "muP", mup_key)
-    mup_result = _load_result(mup_cache)
-    if mup_result is not None:
-        print(f"\n[1/2] muP + WSD — loaded from cache")
-    else:
-        print(f"\n[1/2] Training muP + WSD...")
-        mup_result = train_mup(**common)
-        _save_result(mup_cache, mup_result)
-    mup_tag = "DIV" if mup_result.diverged else f"{mup_result.final_loss:.4f}"
-    print(f"  → muP final_loss={mup_tag}")
-
-    # ── maxP ──
+    # ── maxP (run first — slower, want to cache early) ──
     maxp_hparams = {**cache_hparams,
                     "warmup_steps": args.warmup_steps,
                     "solve_interval": args.solve_interval,
@@ -453,9 +440,9 @@ def main():
     maxp_cache = _cache_path(cache_dir, "maxP", maxp_key)
     maxp_result = _load_result(maxp_cache)
     if maxp_result is not None:
-        print(f"\n[2/2] maxP + WSD — loaded from cache")
+        print(f"\n[1/2] maxP + WSD — loaded from cache")
     else:
-        print(f"\n[2/2] Training maxP + WSD...")
+        print(f"\n[1/2] Training maxP + WSD...")
         maxp_result = train_maxp(
             **common,
             warmup_steps=args.warmup_steps,
@@ -465,6 +452,19 @@ def main():
         _save_result(maxp_cache, maxp_result)
     maxp_tag = "DIV" if maxp_result.diverged else f"{maxp_result.final_loss:.4f}"
     print(f"  → maxP final_loss={maxp_tag}")
+
+    # ── muP ──
+    mup_key = _cache_key("muP", **cache_hparams)
+    mup_cache = _cache_path(cache_dir, "muP", mup_key)
+    mup_result = _load_result(mup_cache)
+    if mup_result is not None:
+        print(f"\n[2/2] muP + WSD — loaded from cache")
+    else:
+        print(f"\n[2/2] Training muP + WSD...")
+        mup_result = train_mup(**common)
+        _save_result(mup_cache, mup_result)
+    mup_tag = "DIV" if mup_result.diverged else f"{mup_result.final_loss:.4f}"
+    print(f"  → muP final_loss={mup_tag}")
 
     print(f"\n{'='*50}")
     print(f"  muP  loss={mup_tag}")
