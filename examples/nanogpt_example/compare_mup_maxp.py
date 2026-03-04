@@ -8,7 +8,7 @@ Usage:
     python compare_mup_maxp.py
     python compare_mup_maxp.py --steps 5000 --d-model 256
     # Quick smoke test:
-    python compare_mup_maxp.py --d-model 128 --n-layers 4 --n-heads 4 --steps 500
+    python compare_mup_maxp.py --d-model 128 --n-layers 4 --n-heads 4 --steps 500 --warmup 50 --decay 100 --warmup-steps 50
 """
 
 import argparse
