@@ -25,6 +25,30 @@ _DEFAULT_AB = {
 }
 
 
+def _extract_c(result: dict) -> dict[str, float]:
+    """Extract c values from solver result, dropping None entries."""
+    return {name: c for name, (c, _) in result.items() if c is not None}
+
+
+def _solve_graph(
+    graph: OpGraph,
+    optimizer_type: str,
+    c_fixed: dict[str, float] | None = None,
+) -> dict[str, float]:
+    """Solve LP on graph, with trivial fallback for <2 weighted nodes."""
+    weighted = [n for n in graph.nodes.values() if n.has_weight]
+    if len(weighted) < 2:
+        return {
+            n.name: c_fixed.get(n.name, 0.0) if c_fixed else 0.0
+            for n in weighted
+        }
+    # All fixed → skip solver entirely
+    if c_fixed and all(n.name in c_fixed for n in weighted):
+        return {n.name: c_fixed[n.name] for n in weighted}
+    result = find_c(graph, optimizer_type=optimizer_type, c_fixed=c_fixed)
+    return _extract_c(result)
+
+
 class Parametrization:
     """Apply ABC parametrization to a model containing ParametrizedModule markers.
 
@@ -62,6 +86,8 @@ class Parametrization:
         std_prefactor: Multiplier for init std.
         ab_overrides: Optional dict mapping layer_type → ``(a, b)`` to
             override the built-in defaults.
+        c_overrides: Optional dict mapping layer_type → ``c`` to override
+            the LP-solved value.  Per-PM ``c`` takes priority over this.
         sample_input: Optional example input for DAG tracing.  When provided,
             the solver assigns per-PM c values based on the actual data flow
             graph instead of collapsing by layer type.
@@ -80,6 +106,7 @@ class Parametrization:
         lr_prefactor: float = 1e-3,
         std_prefactor: float = 1.0,
         ab_overrides: dict[str, tuple[float, float]] | None = None,
+        c_overrides: dict[str, float] | None = None,
         sample_input: torch.Tensor | None = None,
         # Phase 2 params
         warmup_steps: int = 0,
@@ -114,22 +141,25 @@ class Parametrization:
                     f"Supported: {list(ab.keys())} (or pass ab_overrides)."
                 )
 
-        # Solve for c: traced graph (per-op) or synthetic chain (per-type)
-        graph = None
+        # Build graph and solve for c
         if sample_input is not None:
-            c_by_name, graph = self._solve_c_traced(
-                model, sample_input, ab, optimizer_type, alignment
-            )
+            graph = self._trace_graph(model, sample_input, ab, alignment)
         else:
-            c_by_name = self._solve_c_chain_static(pms, ab, optimizer_type, alignment)
+            graph = self._build_chain_graph(pms, ab, alignment)
+
+        # Collect user-provided c values (per-PM overrides take priority)
+        c_fixed: dict[str, float] = {}
+        for name, pm in pms:
+            if pm.weight is None:
+                continue
+            if pm.c is not None:
+                c_fixed[name] = pm.c
+            elif c_overrides and pm.layer_type in c_overrides:
+                c_fixed[name] = c_overrides[pm.layer_type]
+
+        c_by_name = _solve_graph(graph, optimizer_type, c_fixed=c_fixed or None)
 
         # Apply: init weights, set scale, build param groups
-        names: list[str] = []
-        al: list[float] = []
-        bl: list[float] = []
-        cl: list[float | None] = []
-        fan_ins: list[int] = []
-
         parametrized_ids: set[int] = set()
         groups: list[dict] = []
 
@@ -141,17 +171,11 @@ class Parametrization:
             fan_in = pm.width_dim
             has_params = pm.weight is not None
 
-            names.append(name)
-            al.append(a)
-            bl.append(b)
-            fan_ins.append(fan_in)
-
             # Set output scale
             pm.scale = fan_in ** (-a) if a != 0.0 else 1.0
 
             if has_params:
                 c = c_by_name[name]
-                cl.append(c)
 
                 # Re-initialise weights
                 inner = pm.inner
@@ -174,8 +198,6 @@ class Parametrization:
                     "c": float(c),
                     "maxp_managed": True,
                 })
-            else:
-                cl.append(None)
 
         # Collect all other parameters (LayerNorm, etc.)
         other = [
@@ -191,14 +213,11 @@ class Parametrization:
             })
 
         self._param_groups = groups
-        self._al = al
-        self._bl = bl
-        self._cl = cl
-        self._fan_ins = fan_ins
 
         # Phase 2 state
         self._pms = pms
         self._ab = ab
+        self._c_fixed = c_fixed or None
         self._optimizer_type = optimizer_type
         self._alignment = alignment
         self._std_prefactor = std_prefactor
@@ -207,8 +226,7 @@ class Parametrization:
         self._sample_size = sample_size
         self._norm_mode = norm_mode
         self._step_count = 0
-        self._use_traced = sample_input is not None
-        self._graph = graph  # saved OpGraph for DAG re-solve
+        self._graph = graph
 
         # Set initial alignment on each PM from the preset
         alpha_val, omega_val, u_val = _ALIGNMENT_PRESETS[alignment]
@@ -225,25 +243,14 @@ class Parametrization:
     # Phase 2: dynamic alignment
     # ------------------------------------------------------------------
 
-    def capture_initial(self, sample_input: torch.Tensor) -> None:
-        """Capture initial (z_0, w_0) for alignment measurement.
-
-        Must be called before training starts (after ``__init__``).
-        Stores ``_z0`` and ``_w0`` on each :class:`ParametrizedModule`.
-
-        Args:
-            sample_input: A batch of inputs to run through the model.
-                Only the first ``sample_size`` samples are kept.
-        """
+    def _capture_activations(self, sample_input: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Run a forward pass and capture pre-activation inputs for each PM."""
         captured: dict[str, torch.Tensor] = {}
         hooks: list[torch.utils.hooks.RemovableHook] = []
         sample_size = self._sample_size
 
         for name, pm in self._pms:
-            if pm.inner is None:
-                continue
-            # Skip nn.Embedding: input is discrete indices, not activations
-            if isinstance(pm.inner, nn.Embedding):
+            if pm.inner is None or isinstance(pm.inner, nn.Embedding):
                 continue
 
             def _hook(mod, inp, out, _name=name):
@@ -256,6 +263,20 @@ class Parametrization:
 
         for h in hooks:
             h.remove()
+
+        return captured
+
+    def capture_initial(self, sample_input: torch.Tensor) -> None:
+        """Capture initial (z_0, w_0) for alignment measurement.
+
+        Must be called before training starts (after ``__init__``).
+        Stores ``_z0`` and ``_w0`` on each :class:`ParametrizedModule`.
+
+        Args:
+            sample_input: A batch of inputs to run through the model.
+                Only the first ``sample_size`` samples are kept.
+        """
+        captured = self._capture_activations(sample_input)
 
         for name, pm in self._pms:
             if pm.inner is not None and name in captured:
@@ -291,27 +312,7 @@ class Parametrization:
             return
 
         # 1. Capture current (z, w) via hooks
-        current: dict[str, torch.Tensor] = {}
-        hooks: list[torch.utils.hooks.RemovableHook] = []
-        sample_size = self._sample_size
-
-        for name, pm in self._pms:
-            if pm.inner is None:
-                continue
-            # Skip nn.Embedding: input is discrete indices, not activations
-            if isinstance(pm.inner, nn.Embedding):
-                continue
-
-            def _hook(mod, inp, out, _name=name):
-                current[_name] = inp[0].detach().clone()[:sample_size]
-
-            hooks.append(pm.inner.register_forward_hook(_hook))
-
-        with torch.no_grad():
-            self.model(sample_input)
-
-        for h in hooks:
-            h.remove()
+        current = self._capture_activations(sample_input)
 
         # 2. Compute alignment per PM, write back to PM
         from maxp.alignment import compute_alignment
@@ -328,10 +329,7 @@ class Parametrization:
 
         # 3. Re-solve LP (skip update if infeasible with current alignment)
         try:
-            if self._use_traced:
-                c_by_name = self._resolve_traced()
-            else:
-                c_by_name = self._resolve_chain()
+            c_by_name = self._resolve()
         except ValueError:
             return
 
@@ -351,48 +349,18 @@ class Parametrization:
             for our_group, opt_group in zip(self._param_groups, optimizer.param_groups):
                 opt_group["lr"] = our_group["lr"]
 
-    def _resolve_chain(self) -> dict[str, float]:
-        """Re-solve chain LP with per-PM alignment from PM attributes."""
-        weighted = [(name, pm) for name, pm in self._pms if pm.weight is not None]
-
-        if len(weighted) >= 2:
-            graph = self._build_chain_graph(self._pms, self._ab, self._alignment)
-            # Update alignment on graph nodes from current PM values
-            for name, pm in weighted:
-                node = graph.nodes[name]
-                node.alpha = pm.alpha
-                node.omega = pm.omega
-                node.u = pm.u
-
-            result = find_c(graph, optimizer_type=self._optimizer_type)
-            return {name: c_val for name, (c_val, _) in result.items() if c_val is not None}
-        elif len(weighted) == 1:
-            return {weighted[0][0]: 0.0}
-        else:
-            return {}
-
-    def _resolve_traced(self) -> dict[str, float]:
-        """Re-solve LP on traced graph with alignment read from PM attributes."""
-        assert self._graph is not None
-
-        # Update alignment on graph nodes from PMs
+    def _resolve(self) -> dict[str, float]:
+        """Re-solve LP with current per-PM alignment values."""
         for name, pm in self._pms:
             if name in self._graph.nodes:
                 node = self._graph.nodes[name]
                 node.alpha = pm.alpha
                 node.omega = pm.omega
                 node.u = pm.u
-
-        result = find_c(self._graph, optimizer_type=self._optimizer_type)
-
-        c_by_name: dict[str, float] = {}
-        for name, (c_val, _r_val) in result.items():
-            if c_val is not None:
-                c_by_name[name] = c_val
-        return c_by_name
+        return _solve_graph(self._graph, self._optimizer_type, c_fixed=self._c_fixed)
 
     # ------------------------------------------------------------------
-    # Static solvers (used at init time)
+    # Graph builders (used at init time)
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -429,22 +397,8 @@ class Parametrization:
         return OpGraph(nodes)
 
     @staticmethod
-    def _solve_c_chain_static(pms, ab, optimizer_type, alignment) -> dict[str, float]:
-        """Build a synthetic chain graph and solve with the DAG solver."""
-        weighted = [(name, pm) for name, pm in pms if pm.weight is not None]
-
-        if len(weighted) >= 2:
-            graph = Parametrization._build_chain_graph(pms, ab, alignment)
-            result = find_c(graph, optimizer_type=optimizer_type)
-            return {name: c_val for name, (c_val, _) in result.items() if c_val is not None}
-        elif len(weighted) == 1:
-            return {weighted[0][0]: 0.0}
-        else:
-            return {}
-
-    @staticmethod
-    def _solve_c_traced(model, sample_input, ab, optimizer_type, alignment):
-        """Trace data flow and solve for c.  Returns (c_by_name, graph)."""
+    def _trace_graph(model, sample_input, ab, alignment) -> OpGraph:
+        """Trace data flow graph from model execution."""
         from maxp.dag import trace_pm_dag
 
         preset = _ALIGNMENT_PRESETS.get(alignment)
@@ -455,16 +409,9 @@ class Parametrization:
 
         graph = trace_pm_dag(model, sample_input, ab=ab)
 
-        # Set alignment values on all nodes
         for node in graph.nodes.values():
             node.alpha = alpha_val
             node.omega = omega_val
             node.u = u_val
 
-        result = find_c(graph, optimizer_type=optimizer_type)
-
-        c_by_name: dict[str, float] = {}
-        for name, (c_val, _r_val) in result.items():
-            if c_val is not None:
-                c_by_name[name] = c_val
-        return c_by_name, graph
+        return graph

@@ -266,7 +266,7 @@ class TestStepInfeasibleLP:
                 pm.u = 100.0
 
         with pytest.raises(ValueError, match="infeasible|optimal"):
-            param._resolve_chain()
+            param._resolve()
 
     def test_infeasible_lp_keeps_previous_lrs(self):
         """step() catches infeasible LP and leaves LRs unchanged."""
@@ -285,7 +285,7 @@ class TestStepInfeasibleLP:
         lrs_before = [g["lr"] for g in param.param_groups]
 
         # Patch the resolver to raise ValueError (simulating infeasible LP)
-        with patch.object(param, "_resolve_chain",
+        with patch.object(param, "_resolve",
                           side_effect=ValueError("infeasible")):
             param.step(X, optimizer)
 
@@ -308,7 +308,7 @@ class TestStepInfeasibleLP:
         lrs_before = [g["lr"] for g in param.param_groups]
 
         # First step: infeasible → LRs unchanged
-        with patch.object(param, "_resolve_chain",
+        with patch.object(param, "_resolve",
                           side_effect=ValueError("infeasible")):
             param.step(X, optimizer)
         assert [g["lr"] for g in param.param_groups] == lrs_before
@@ -343,3 +343,144 @@ class TestStepUpdatesAlignmentOnPM:
                 assert math.isfinite(pm.alpha), f"{name}: alpha={pm.alpha}"
                 assert math.isfinite(pm.omega), f"{name}: omega={pm.omega}"
                 assert math.isfinite(pm.u), f"{name}: u={pm.u}"
+
+
+# ---------------------------------------------------------------------------
+# Tests for c overrides
+# ---------------------------------------------------------------------------
+
+class TestCOverrideAllFixed:
+    """When all PMs have c set, solver is skipped and LRs match exactly."""
+
+    def test_all_c_fixed_via_pm(self):
+        torch.manual_seed(0)
+        d = 32
+        model = nn.Module()
+        model.emb = ParametrizedModule(
+            nn.Linear(16, d, bias=False), width_dim=d,
+            layer_type="embedding", c=0.0,
+        )
+        model.hidden = ParametrizedModule(
+            nn.Linear(d, d, bias=False), width_dim=d,
+            layer_type="hidden", c=0.5,
+        )
+        model.head = ParametrizedModule(
+            nn.Linear(d, 4, bias=False), width_dim=d,
+            layer_type="readout", c=1.0,
+        )
+        model.forward = lambda x: model.head(torch.relu(model.hidden(torch.relu(model.emb(x)))))
+
+        lr = 0.01
+        param = Parametrization(model, lr_prefactor=lr)
+
+        managed = [g for g in param.param_groups if g.get("maxp_managed")]
+        expected_c = {"emb": 0.0, "hidden": 0.5, "head": 1.0}
+        for g in managed:
+            name = g["layer_name"]
+            assert g["c"] == expected_c[name], f"{name}: c={g['c']} != {expected_c[name]}"
+            expected_lr = lr * (d ** (-expected_c[name]))
+            assert abs(g["lr"] - expected_lr) < 1e-12, (
+                f"{name}: lr={g['lr']} != {expected_lr}"
+            )
+
+    def test_all_c_fixed_via_c_overrides(self):
+        torch.manual_seed(0)
+        model = SimpleMLP(d=32)
+        lr = 0.01
+        param = Parametrization(
+            model, lr_prefactor=lr,
+            c_overrides={"embedding": 0.0, "hidden": 0.0, "readout": 0.0},
+        )
+
+        managed = [g for g in param.param_groups if g.get("maxp_managed")]
+        for g in managed:
+            assert g["c"] == 0.0
+            assert abs(g["lr"] - lr) < 1e-12  # d^(-0) = 1
+
+
+class TestCOverridePriority:
+    """Per-PM c takes priority over c_overrides."""
+
+    def test_pm_c_overrides_c_overrides(self):
+        torch.manual_seed(0)
+        d = 32
+        model = nn.Module()
+        model.emb = ParametrizedModule(
+            nn.Linear(16, d, bias=False), width_dim=d,
+            layer_type="embedding", c=0.25,  # per-PM override
+        )
+        model.hidden = ParametrizedModule(
+            nn.Linear(d, d, bias=False), width_dim=d,
+            layer_type="hidden",
+        )
+        model.head = ParametrizedModule(
+            nn.Linear(d, 4, bias=False), width_dim=d,
+            layer_type="readout",
+        )
+        model.forward = lambda x: model.head(torch.relu(model.hidden(torch.relu(model.emb(x)))))
+
+        lr = 0.01
+        param = Parametrization(
+            model, lr_prefactor=lr,
+            c_overrides={"embedding": 0.5, "hidden": 0.0, "readout": 0.0},
+        )
+
+        managed = {g["layer_name"]: g for g in param.param_groups if g.get("maxp_managed")}
+        # Per-PM c=0.25 wins over c_overrides embedding=0.5
+        assert managed["emb"]["c"] == 0.25
+        # c_overrides values used for the rest
+        assert managed["hidden"]["c"] == 0.0
+        assert managed["head"]["c"] == 0.0
+
+
+class TestCOverrideMixed:
+    """Some PMs have fixed c, others are solved."""
+
+    def test_mixed_fixed_and_solved(self):
+        torch.manual_seed(0)
+        d = 32
+        model = SimpleMLP(d=d)
+        # Fix only readout c=0.5 (feasible with muP defaults); let solver
+        # handle embedding and hidden
+        param = Parametrization(
+            model, lr_prefactor=0.01,
+            c_overrides={"readout": 0.5},
+        )
+
+        managed = {g["layer_name"]: g for g in param.param_groups if g.get("maxp_managed")}
+        # readout should be exactly 0.5
+        assert managed["head"]["c"] == 0.5
+        # Other layers should have solver-computed c (some finite value)
+        for name in ("emb", "hidden"):
+            assert math.isfinite(managed[name]["c"])
+
+
+class TestCOverrideDynamicStep:
+    """_resolve() should pass c_fixed correctly during dynamic re-solve."""
+
+    def test_resolve_uses_c_fixed(self):
+        torch.manual_seed(0)
+        model = SimpleMLP(d=32)
+        lr = 0.01
+        param = Parametrization(
+            model, lr_prefactor=lr,
+            c_overrides={"embedding": 0.0, "hidden": 0.0, "readout": 0.0},
+        )
+        X = torch.randn(8, 16)
+        param.capture_initial(X)
+
+        # Train a few steps
+        optimizer = torch.optim.Adam(param.param_groups)
+        for _ in range(3):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+
+        # step() should re-solve with c_fixed and keep c=0 for all
+        param.step(X, optimizer)
+
+        managed = [g for g in param.param_groups if g.get("maxp_managed")]
+        for g in managed:
+            assert g["c"] == 0.0
+            assert abs(g["lr"] - lr) < 1e-12

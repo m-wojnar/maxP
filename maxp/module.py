@@ -23,6 +23,9 @@ class ParametrizedModule(nn.Module):
         b: Optional override for the init variance exponent.
             If set, :class:`Parametrization` will use this value instead of
             the default.
+        c: Optional override for the learning rate exponent.
+            If set, :class:`Parametrization` will use this value instead of
+            solving for it via LP.
 
     Attributes:
         inner: The wrapped ``nn.Module``, or ``None`` for bare callables.
@@ -41,6 +44,7 @@ class ParametrizedModule(nn.Module):
         *,
         a: float | None = None,
         b: float | None = None,
+        c: float | None = None,
     ):
         super().__init__()
         if isinstance(module_or_fn, nn.Module):
@@ -52,9 +56,10 @@ class ParametrizedModule(nn.Module):
         self.layer_type = layer_type
         self.scale = 1.0
 
-        # Per-PM (a, b) overrides — Parametrization respects these if set
+        # Per-PM (a, b, c) overrides — Parametrization respects these if set
         self.a: float | None = a
         self.b: float | None = b
+        self.c: float | None = c
 
         # Alignment (set by Parametrization from preset or measurement)
         self.alpha: float | None = None

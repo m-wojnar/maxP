@@ -53,6 +53,7 @@ def find_c_adam(
     solver: plp.LpSolver | None = None,
     feature_learning: bool = False,
     M: float = 10.0,
+    c_fixed: dict[str, float] | None = None,
 ) -> dict[str, tuple[float | None, float]]:
     """Find optimal per-op c values for Adam on an OpGraph.
 
@@ -78,13 +79,16 @@ def find_c_adam(
     lp = plp.LpProblem("maxp_adam", plp.LpMinimize)
 
     # Create variables for each node
-    c_vars: dict[str, plp.LpVariable | None] = {}
+    c_vars: dict[str, plp.LpVariable | float | None] = {}
     r_vars: dict[str, plp.LpVariable] = {}
 
     for node in topo:
         r_vars[node.name] = plp.LpVariable(f"r_{node.name}")
         if node.has_weight:
-            c_vars[node.name] = plp.LpVariable(f"c_{node.name}")
+            if c_fixed and node.name in c_fixed:
+                c_vars[node.name] = c_fixed[node.name]
+            else:
+                c_vars[node.name] = plp.LpVariable(f"c_{node.name}")
         else:
             c_vars[node.name] = None
 
@@ -146,8 +150,9 @@ def find_c_adam(
             for pred_name in sink_node.predecessors:
                 lp += r_vars[pred_name] == 0
 
-    # Objective: minimize sum of c for weight-bearing nodes
-    weight_c = [c for c in c_vars.values() if c is not None]
+    # Objective: minimize sum of c for weight-bearing nodes (exclude fixed constants)
+    weight_c = [c for c in c_vars.values()
+                if c is not None and not isinstance(c, (int, float))]
     if weight_c:
         lp += plp.lpSum(weight_c)
 
@@ -158,7 +163,13 @@ def find_c_adam(
 
     result: dict[str, tuple[float | None, float]] = {}
     for node in topo:
-        c_val = c_vars[node.name].varValue if c_vars[node.name] is not None else None
+        cv = c_vars[node.name]
+        if cv is None:
+            c_val = None
+        elif isinstance(cv, (int, float)):
+            c_val = float(cv)
+        else:
+            c_val = cv.varValue
         r_val = r_vars[node.name].varValue
         result[node.name] = (c_val, r_val)
 
@@ -170,6 +181,7 @@ def find_c_sgd(
     solver: plp.LpSolver | None = None,
     feature_learning: bool = False,
     M: float = 10.0,
+    c_fixed: dict[str, float] | None = None,
 ) -> dict[str, tuple[float | None, float]]:
     """Find optimal per-op c values for SGD on an OpGraph.
 
@@ -186,13 +198,16 @@ def find_c_sgd(
 
     lp = plp.LpProblem("maxp_sgd", plp.LpMinimize)
 
-    c_vars: dict[str, plp.LpVariable | None] = {}
+    c_vars: dict[str, plp.LpVariable | float | None] = {}
     r_vars: dict[str, plp.LpVariable] = {}
 
     for node in topo:
         r_vars[node.name] = plp.LpVariable(f"r_{node.name}")
         if node.has_weight:
-            c_vars[node.name] = plp.LpVariable(f"c_{node.name}")
+            if c_fixed and node.name in c_fixed:
+                c_vars[node.name] = c_fixed[node.name]
+            else:
+                c_vars[node.name] = plp.LpVariable(f"c_{node.name}")
         else:
             c_vars[node.name] = None
 
@@ -285,7 +300,8 @@ def find_c_sgd(
             for pred_name in sink_node.predecessors:
                 lp += r_vars[pred_name] == 0
 
-    weight_c = [c for c in c_vars.values() if c is not None]
+    weight_c = [c for c in c_vars.values()
+                if c is not None and not isinstance(c, (int, float))]
     if weight_c:
         lp += plp.lpSum(weight_c)
 
@@ -296,7 +312,13 @@ def find_c_sgd(
 
     result: dict[str, tuple[float | None, float]] = {}
     for node in topo:
-        c_val = c_vars[node.name].varValue if c_vars[node.name] is not None else None
+        cv = c_vars[node.name]
+        if cv is None:
+            c_val = None
+        elif isinstance(cv, (int, float)):
+            c_val = float(cv)
+        else:
+            c_val = cv.varValue
         r_val = r_vars[node.name].varValue
         result[node.name] = (c_val, r_val)
 
@@ -309,18 +331,23 @@ def find_c(
     solver: plp.LpSolver | None = None,
     feature_learning: bool = False,
     M: float = 10.0,
+    c_fixed: dict[str, float] | None = None,
 ) -> dict[str, tuple[float | None, float]]:
     """Find optimal per-op c values on an OpGraph.
 
     Dispatches to find_c_adam or find_c_sgd.
 
+    Args:
+        c_fixed: Optional dict mapping node name → fixed c value.
+            Nodes in this dict use a float constant instead of an LP variable.
+
     Returns:
         Dict mapping node name -> (c or None for activation-only, r).
     """
     if optimizer_type.lower() == "adam":
-        return find_c_adam(graph, solver, feature_learning, M)
+        return find_c_adam(graph, solver, feature_learning, M, c_fixed=c_fixed)
     elif optimizer_type.lower() == "sgd":
-        return find_c_sgd(graph, solver, feature_learning, M)
+        return find_c_sgd(graph, solver, feature_learning, M, c_fixed=c_fixed)
     else:
         raise ValueError(f"Unknown optimizer_type: {optimizer_type}. Must be 'adam' or 'sgd'.")
 
