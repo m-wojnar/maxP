@@ -19,7 +19,8 @@ import torch.nn.functional as F
 
 from maxp.dag import DagNode, OpGraph, MergeType, trace_pm_dag
 from maxp.module import ParametrizedModule
-from maxp.solver import find_c_adam, find_c_dag_adam, find_c_dag_sgd
+from tests.modules.chain_solver import find_c_adam as find_c_adam_chain
+from maxp.solver import find_c_adam, find_c_sgd
 
 
 # ---------------------------------------------------------------------------
@@ -91,35 +92,35 @@ class TestAnalyticalCorrectness:
 
     def test_mup_chain_exact_values(self):
         """Standard 3-node muP chain: known solution c = [0.5, 1.0, 0.5]."""
-        res = find_c_dag_adam(_chain_graph())
+        res = find_c_adam(_chain_graph())
         assert abs(res["emb"][0] - 0.5) < 1e-6
         assert abs(res["h"][0] - 1.0) < 1e-6
         assert abs(res["head"][0] - 0.5) < 1e-6
 
     def test_dag_matches_flat_solver_full_alignment(self):
-        """DAG solver on a linear chain matches the flat solver exactly."""
-        res_dag = find_c_dag_adam(_chain_graph())
-        cl_flat, rl_flat = find_c_adam(
+        """Graph solver on a linear chain matches the flat chain solver exactly."""
+        res = find_c_adam(_chain_graph())
+        cl_flat, rl_flat = find_c_adam_chain(
             [-0.5, 0.0, 0.5], [0.5, 0.5, 0.5],
             [1.0]*3, [0.5]*3, [1.0]*3,
         )
         for (name, idx) in [("emb", 0), ("h", 1), ("head", 2)]:
-            assert abs(res_dag[name][0] - cl_flat[idx]) < 1e-6
-            assert abs(res_dag[name][1] - rl_flat[idx]) < 1e-6
+            assert abs(res[name][0] - cl_flat[idx]) < 1e-6
+            assert abs(res[name][1] - rl_flat[idx]) < 1e-6
 
     def test_dag_matches_flat_solver_no_alignment(self):
         """Same check with no-alignment preset."""
-        res_dag = find_c_dag_adam(_chain_graph(alpha=0, omega=0, u=0))
-        cl_flat, rl_flat = find_c_adam(
+        res = find_c_adam(_chain_graph(alpha=0, omega=0, u=0))
+        cl_flat, rl_flat = find_c_adam_chain(
             [-0.5, 0.0, 0.5], [0.5, 0.5, 0.5],
             [0.0]*3, [0.0]*3, [0.0]*3,
         )
         for (name, idx) in [("emb", 0), ("h", 1), ("head", 2)]:
-            assert abs(res_dag[name][0] - cl_flat[idx]) < 1e-6
+            assert abs(res[name][0] - cl_flat[idx]) < 1e-6
 
     def test_emb_c_equals_neg_a(self):
         """Source node: r = a + c >= 0 => c >= -a. Solver should hit equality."""
-        res = find_c_dag_adam(_chain_graph())
+        res = find_c_adam(_chain_graph())
         a_emb = -0.5
         assert abs(res["emb"][0] - (-a_emb)) < 1e-6  # c = 0.5 = -(-0.5)
 
@@ -132,59 +133,59 @@ class TestOptimality:
 
     def test_all_r_nonneg(self):
         """Basic feasibility: every r >= 0."""
-        res = find_c_dag_adam(_chain_graph())
+        res = find_c_adam(_chain_graph())
         for name, (c, r) in res.items():
             assert r >= -1e-8, f"r_{name} = {r} < 0"
 
     def test_all_binding_full_alignment(self):
         """With full alignment, all r = 0 (every constraint binding)."""
-        res = find_c_dag_adam(_chain_graph())
+        res = find_c_adam(_chain_graph())
         for name, (c, r) in res.items():
             assert abs(r) < 1e-6, f"r_{name} = {r}, expected 0 (binding)"
 
     def test_perturb_c_emb_violates(self):
         """Reducing c_emb by eps makes r_emb < 0."""
-        res = find_c_dag_adam(_chain_graph())
+        res = find_c_adam(_chain_graph())
         c_emb_opt = res["emb"][0]
         r_emb_perturbed = -0.5 + (c_emb_opt - 0.01)
         assert r_emb_perturbed < 0
 
     def test_perturb_c_hidden_violates(self):
         """Reducing c_h by eps makes r_h < 0."""
-        res = find_c_dag_adam(_chain_graph())
+        res = find_c_adam(_chain_graph())
         c_h_opt = res["h"][0]
         r_h_perturbed = _compute_hidden_r(c_h_opt - 0.01, r_in=0.0)
         assert r_h_perturbed < 0
 
     def test_perturb_c_head_violates(self):
         """Reducing c_head by eps makes r_head < 0."""
-        res = find_c_dag_adam(_chain_graph())
+        res = find_c_adam(_chain_graph())
         c_head_opt = res["head"][0]
         r_head_perturbed = _compute_readout_r(c_head_opt - 0.01, r_in=0.0)
         assert r_head_perturbed < 0
 
     def test_sum_c_is_minimal(self):
         """Each c is at its individual lower bound (no slack)."""
-        res = find_c_dag_adam(_chain_graph())
+        res = find_c_adam(_chain_graph())
         assert abs(res["emb"][0] - 0.5) < 1e-6
         assert abs(res["h"][0] - 1.0) < 1e-6
         assert abs(res["head"][0] - 0.5) < 1e-6
 
     def test_swiglu_all_r_nonneg(self):
         """SwiGLU graph: all r >= 0."""
-        res = find_c_dag_adam(_swiglu_graph())
+        res = find_c_adam(_swiglu_graph())
         for name, (c, r) in res.items():
             assert r >= -1e-8, f"r_{name} = {r} < 0"
 
     def test_swiglu_all_binding_full_alignment(self):
         """SwiGLU with full alignment: all r = 0 (optimal under preset alignment)."""
-        res = find_c_dag_adam(_swiglu_graph())
+        res = find_c_adam(_swiglu_graph())
         for name, (c, r) in res.items():
             assert abs(r) < 1e-6, f"r_{name} = {r}, expected 0"
 
     def test_sgd_all_r_nonneg(self):
         """SGD on a chain: all r >= 0."""
-        res = find_c_dag_sgd(_chain_graph())
+        res = find_c_sgd(_chain_graph())
         for name, (c, r) in res.items():
             assert r >= -1e-8, f"r_{name} = {r} < 0"
 
@@ -212,7 +213,7 @@ class TestPerOpDifferentiation:
         g.nodes["down"].alpha = 0.5
         g.nodes["down"].u = 0.5  # weaker cross-term too
 
-        res = find_c_dag_adam(g)
+        res = find_c_adam(g)
 
         # gate and up should get the same c (same predecessors, same alignment)
         assert abs(res["gate"][0] - res["up"][0]) < 1e-6
@@ -231,7 +232,7 @@ class TestPerOpDifferentiation:
         g.nodes["up"].alpha = 0.8
         g.nodes["down"].alpha = 0.3
 
-        res = find_c_dag_adam(g)
+        res = find_c_adam(g)
 
         c_gate = res["gate"][0]
         c_down = res["down"][0]
@@ -304,7 +305,7 @@ class TestPerOpDifferentiation:
         g.nodes["up"].alpha = 0.7
         g.nodes["down"].alpha = 0.4
 
-        res = find_c_dag_adam(g)
+        res = find_c_adam(g)
 
         # Emb: r = a + c
         r_emb = res["emb"][1]
@@ -338,8 +339,8 @@ class TestPerOpDifferentiation:
     def test_feature_learning_tightens_constraints(self):
         """feature_learning=True forces r=0 at pre-sink nodes, increasing sum(c)."""
         g = _chain_graph(alpha=0, omega=0, u=0)  # no-alignment for slack
-        res_no_fl = find_c_dag_adam(g, feature_learning=False)
-        res_fl = find_c_dag_adam(g, feature_learning=True)
+        res_no_fl = find_c_adam(g, feature_learning=False)
+        res_fl = find_c_adam(g, feature_learning=True)
 
         sum_no_fl = sum(c for c, _ in res_no_fl.values() if c is not None)
         sum_fl = sum(c for c, _ in res_fl.values() if c is not None)

@@ -83,7 +83,7 @@ violate stability-at-init (e.g., embedding with `a+b != 0`).
 
 **Reproduce:**
 ```python
-from maxp.solver import find_c
+from tests.modules.chain_solver import find_c
 cl, rl = find_c([-0.5, 0.0, 0.5], [0.5, 0.5, 0.5],
                 [1.0]*3, [0.5]*3, [1.0]*3, optimizer_type="adam")
 print(cl)  # [0.5, 1.0, 0.5]
@@ -186,7 +186,7 @@ Every trial — including chains up to 20 layers deep with widely varying
 
 **Reproduce:**
 ```python
-from maxp.solver import find_c
+from tests.modules.chain_solver import find_c
 import random
 rng = random.Random(2024)
 
@@ -245,8 +245,8 @@ solver is a faithful copy of the old one.
 
 **Reproduce:**
 ```python
-from maxp.solver import find_c as find_c_old
-from maxp.solver import find_c as find_c_new
+from tests.modules.chain_solver import find_c as find_c_old
+from tests.modules.chain_solver import find_c as find_c_new
 
 al = [-0.5, 0.0, 0.0, 0.5]
 bl = [0.5, 0.5, 0.5, 0.5]
@@ -445,14 +445,14 @@ accordingly.
 
 ---
 
-## 11. DAG Solver — Matches Chain
+## 11. Graph Solver — Matches Chain
 
 **What we're testing:** For a linear chain (no skip connections, forks, or
-merges), the DAG solver `find_c_dag()` should produce identical results to the
-chain solver `find_c()`.
+merges), the graph solver `find_c()` should produce identical results to the
+chain solver `tests.modules.chain_solver.find_c()`.
 
-This is important because they're completely different code paths — `find_c()`
-uses a 1D chain LP formulation while `find_c_dag()` builds a graph LP with
+This is important because they're completely different code paths — the chain
+solver uses a 1D chain LP formulation while `find_c()` builds a graph LP with
 predecessors and successors.
 
 **Proof:**

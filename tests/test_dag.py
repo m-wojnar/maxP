@@ -9,7 +9,8 @@ import torch.nn.functional as F
 from maxp.dag import MergeType, DagNode, OpGraph, trace_pm_dag
 from maxp.module import ParametrizedModule
 from maxp.parametrization import Parametrization
-from maxp.solver import find_c_adam, find_c_dag_adam, find_c_dag_sgd, find_c_dag
+from tests.modules.chain_solver import find_c_adam as find_c_adam_chain
+from maxp.solver import find_c_adam, find_c_sgd, find_c
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +251,7 @@ class TestDagSolver:
         graph = OpGraph(nodes)
 
         # Solve with DAG solver
-        dag_result = find_c_dag_adam(graph)
+        dag_result = find_c_adam(graph)
 
         # Solve with flat solver (same a,b ordering)
         al = [-0.5, 0.0, 0.5]
@@ -258,7 +259,7 @@ class TestDagSolver:
         alpha = [1.0, 1.0, 1.0]
         omega = [0.5, 0.5, 0.5]
         u = [1.0, 1.0, 1.0]
-        flat_cl, flat_rl = find_c_adam(al, bl, alpha, omega, u)
+        flat_cl, flat_rl = find_c_adam_chain(al, bl, alpha, omega, u)
 
         # Compare c values
         dag_cl = [dag_result["emb"][0], dag_result["hidden"][0], dag_result["head"][0]]
@@ -295,7 +296,7 @@ class TestDagSolver:
             ),
         }
         graph = OpGraph(nodes)
-        result = find_c_dag_adam(graph)
+        result = find_c_adam(graph)
 
         for name, (c, r) in result.items():
             assert r >= -1e-8, f"r for '{name}' is negative: {r}"
@@ -328,7 +329,7 @@ class TestDagSolver:
             ),
         }
         graph = OpGraph(nodes)
-        result = find_c_dag_adam(graph)
+        result = find_c_adam(graph)
 
         # r for h should be constrained by min of r_s1, r_s2 (as r_in)
         r_s1 = result["s1"][1]
@@ -368,7 +369,7 @@ class TestDagSolver:
             ),
         }
         graph = OpGraph(nodes)
-        result = find_c_dag_adam(graph)
+        result = find_c_adam(graph)
 
         # SUM merge means r_in for down = r_gate + r_up
         # All r should be non-negative
@@ -395,7 +396,7 @@ class TestDagSolver:
             ),
         }
         graph = OpGraph(nodes)
-        result = find_c_dag_adam(graph)
+        result = find_c_adam(graph)
 
         # act is activation-only: r_act = r_emb + a_act = r_emb + 0
         r_emb = result["emb"][1]
@@ -408,7 +409,7 @@ class TestDagSolver:
         model = SwiGLUModel()
         x = torch.randint(0, 64, (1, 4))
         graph = trace_pm_dag(model, x)
-        result = find_c_dag_adam(graph)
+        result = find_c_adam(graph)
         for name, (c, r) in result.items():
             assert r >= -1e-8, f"r for '{name}' is negative: {r}"
 
@@ -432,15 +433,15 @@ class TestDagSolver:
             ),
         }
         graph = OpGraph(nodes)
-        result = find_c_dag_sgd(graph)
+        result = find_c_sgd(graph)
 
         for name, (c, r) in result.items():
             assert r >= -1e-8, f"r for '{name}' negative: {r}"
             assert c is not None
             assert np.isfinite(c)
 
-    def test_dag_dispatch(self):
-        """find_c_dag dispatches correctly."""
+    def test_dispatch(self):
+        """find_c dispatches correctly."""
         nodes = {
             "emb": DagNode(
                 name="emb", a=-0.5, b=0.5, layer_type="embedding",
@@ -454,13 +455,13 @@ class TestDagSolver:
             ),
         }
         graph = OpGraph(nodes)
-        result_adam = find_c_dag(graph, optimizer_type="adam")
-        result_sgd = find_c_dag(graph, optimizer_type="sgd")
+        result_adam = find_c(graph, optimizer_type="adam")
+        result_sgd = find_c(graph, optimizer_type="sgd")
         assert isinstance(result_adam, dict)
         assert isinstance(result_sgd, dict)
 
         with pytest.raises(ValueError, match="Unknown optimizer_type"):
-            find_c_dag(graph, optimizer_type="rmsprop")
+            find_c(graph, optimizer_type="rmsprop")
 
 
 # ---------------------------------------------------------------------------

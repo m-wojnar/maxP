@@ -24,6 +24,7 @@ import torch.nn.functional as F
 from maxp.module import ParametrizedModule
 from maxp.parametrization import Parametrization
 from maxp.solver import find_c
+from maxp.dag import DagNode, OpGraph
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -85,13 +86,32 @@ print("nanoGPT-mup (a,b): embedding=(0,0), hidden=(0,0.5), readout=(1,0)")
 print("Full alignment: alpha=1, omega=0.5, u=1")
 print()
 
+# Helper: build a linear chain graph for the DAG solver
+def _make_chain(al, bl, alpha, omega, u):
+    """Build a linear-chain OpGraph from flat lists."""
+    n = len(al)
+    names = [f"L{i}" for i in range(n)]
+    nodes = {}
+    for i in range(n):
+        lt = "embedding" if i == 0 else ("readout" if i == n - 1 else "hidden")
+        nodes[names[i]] = DagNode(
+            name=names[i], a=al[i], b=bl[i], layer_type=lt,
+            has_weight=True, width_dim=32,
+            predecessors=[names[i - 1]] if i > 0 else [],
+            successors=[names[i + 1]] if i < n - 1 else [],
+            alpha=alpha[i], omega=omega[i], u=u[i],
+        )
+    return OpGraph(nodes), names
+
 # 3-layer chain (simplest case)
 print("--- 3-layer chain: emb, hidden, readout ---")
-cl3, rl3 = find_c(
+_g3, _n3 = _make_chain(
     [0.0, 0.0, 1.0], [0.0, 0.5, 0.0],
     [1.0]*3, [0.5]*3, [1.0]*3,
-    optimizer_type="adam",
 )
+_res3 = find_c(_g3, optimizer_type="adam")
+cl3 = [_res3[n][0] for n in _n3]
+rl3 = [_res3[n][1] for n in _n3]
 print(f"  c = {[f'{c:.1f}' for c in cl3]}")
 check("embedding c = 0", abs(cl3[0]) < 1e-6, f"got {cl3[0]:.6f}")
 check("hidden    c = 1", abs(cl3[1] - 1.0) < 1e-6, f"got {cl3[1]:.6f}")
@@ -103,11 +123,13 @@ print("--- 50-layer chain: emb + 48 hidden + readout (12-layer GPT) ---")
 n_gpt = 50
 al_gpt = [0.0] + [0.0]*48 + [1.0]
 bl_gpt = [0.0] + [0.5]*48 + [0.0]
-cl_gpt, rl_gpt = find_c(
+_g_gpt, _n_gpt = _make_chain(
     al_gpt, bl_gpt,
     [1.0]*n_gpt, [0.5]*n_gpt, [1.0]*n_gpt,
-    optimizer_type="adam",
 )
+_res_gpt = find_c(_g_gpt, optimizer_type="adam")
+cl_gpt = [_res_gpt[n][0] for n in _n_gpt]
+rl_gpt = [_res_gpt[n][1] for n in _n_gpt]
 check("embedding c = 0", abs(cl_gpt[0]) < 1e-6)
 check("all 48 hidden c = 1", all(abs(c - 1.0) < 1e-6 for c in cl_gpt[1:49]))
 check("readout   c = 0", abs(cl_gpt[49]) < 1e-6)

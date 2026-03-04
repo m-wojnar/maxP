@@ -314,13 +314,13 @@ The `min()` is encoded via the big-M method (`_min2_lp`, `_min_lp`).
 SGD constraints differ (they include `2*c[i]` terms because SGD updates
 scale as `lr * gradient` rather than Adam's normalised updates).
 
-### DAG solver
+### Graph-based solver
 
 ```python
-find_c_dag(graph: OpGraph, optimizer_type="adam") -> dict[str, (c, r)]
+find_c(graph: OpGraph, optimizer_type="adam") -> dict[str, (c, r)]
 ```
 
-Dispatches to `find_c_dag_adam()` or `find_c_dag_sgd()`.
+Dispatches to `find_c_adam()` or `find_c_sgd()`.
 
 Same objective and constraint logic, but operates on an `OpGraph` where:
 - Nodes have predecessors/successors (not just linear chain)
@@ -797,5 +797,5 @@ model + sample_input
         │          └─────────────┘
         │                 │
         ▼                 ▼
-  find_c_dag()  ──►  {name: (c, r)}
+  find_c()  ──►  {name: (c, r)}
 ```

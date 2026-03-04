@@ -14,7 +14,7 @@ import argparse
 import torch
 
 from maxp.dag import trace_pm_dag, MergeType
-from maxp.solver import find_c_dag_adam
+from maxp.solver import find_c_adam
 from examples.parameterize_example.parameterized_transformer import (
     Transformer as PTransformer,
 )
@@ -128,6 +128,6 @@ if __name__ == "__main__":
 
     solution = None
     if args.solve:
-        solution = find_c_dag_adam(graph)
+        solution = find_c_adam(graph)
 
     print_dag(graph, solution)

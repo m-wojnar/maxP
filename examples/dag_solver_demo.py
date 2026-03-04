@@ -27,7 +27,7 @@ import torch.nn.functional as F
 from maxp.dag import DagNode, OpGraph, MergeType, trace_pm_dag
 from maxp.module import ParametrizedModule
 from maxp.parametrization import Parametrization
-from maxp.solver import find_c_dag_adam
+from maxp.solver import find_c_adam
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +99,7 @@ def demo_1_analytical():
                         has_weight=True, width_dim=32,
                         predecessors=["h"], successors=[]),
     })
-    res = find_c_dag_adam(g)
+    res = find_c_adam(g)
 
     print(f"   {'node':<6} {'c (solver)':<14} {'c (expected)':<14} {'r':<10} {'match'}")
     print(f"   {'-'*54}")
@@ -128,7 +128,7 @@ def demo_2_optimality():
                         has_weight=True, width_dim=32,
                         predecessors=["h"], successors=[]),
     })
-    res = find_c_dag_adam(g)
+    res = find_c_adam(g)
 
     print(" All r = 0 means every constraint is binding (tight):")
     for name, (c, r) in res.items():
@@ -173,7 +173,7 @@ def demo_3_traced_transformer():
 
     # Solve with uniform alignment (muP baseline)
     print(" With UNIFORM alignment (full preset):")
-    res_uniform = find_c_dag_adam(graph)
+    res_uniform = find_c_adam(graph)
     c_vals = set()
     for node in graph.topological_order():
         c, r = res_uniform[node.name]
@@ -200,7 +200,7 @@ def demo_3_traced_transformer():
         if name in alignment_map:
             node.alpha = alignment_map[name]
 
-    res_measured = find_c_dag_adam(graph2)
+    res_measured = find_c_adam(graph2)
 
     print(f"   {'op':<14} {'type':<10} {'c':>8} {'r':>8}  {'LR (prefactor=0.1)':>20}")
     print(f"   {'-'*64}")

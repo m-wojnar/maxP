@@ -5,8 +5,9 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from maxp.solver import find_c, find_c_dag
+from maxp.solver import find_c
 from maxp.module import ParametrizedModule
+from maxp.dag import DagNode, OpGraph
 
 
 # Alignment assumptions: (alpha, omega, u) per layer
@@ -113,10 +114,10 @@ class Parametrization:
                     f"Supported: {list(ab.keys())} (or pass ab_overrides)."
                 )
 
-        # Solve for c: DAG path (per-op) or chain path (per-type)
+        # Solve for c: traced graph (per-op) or synthetic chain (per-type)
         graph = None
         if sample_input is not None:
-            c_by_name, graph = self._solve_c_dag_initial(
+            c_by_name, graph = self._solve_c_traced(
                 model, sample_input, ab, optimizer_type, alignment
             )
         else:
@@ -206,7 +207,7 @@ class Parametrization:
         self._sample_size = sample_size
         self._norm_mode = norm_mode
         self._step_count = 0
-        self._use_dag = sample_input is not None
+        self._use_traced = sample_input is not None
         self._graph = graph  # saved OpGraph for DAG re-solve
 
         # Set initial alignment on each PM from the preset
@@ -327,8 +328,8 @@ class Parametrization:
 
         # 3. Re-solve LP (skip update if infeasible with current alignment)
         try:
-            if self._use_dag:
-                c_by_name = self._resolve_dag()
+            if self._use_traced:
+                c_by_name = self._resolve_traced()
             else:
                 c_by_name = self._resolve_chain()
         except ValueError:
@@ -352,26 +353,26 @@ class Parametrization:
 
     def _resolve_chain(self) -> dict[str, float]:
         """Re-solve chain LP with per-PM alignment from PM attributes."""
-        # Filter to weight-bearing PMs in discovery order
         weighted = [(name, pm) for name, pm in self._pms if pm.weight is not None]
 
         if len(weighted) >= 2:
-            al = [pm.a if pm.a is not None else self._ab[pm.layer_type][0] for _, pm in weighted]
-            bl = [pm.b if pm.b is not None else self._ab[pm.layer_type][1] for _, pm in weighted]
-            alpha = [pm.alpha for _, pm in weighted]
-            omega = [pm.omega for _, pm in weighted]
-            u = [pm.u for _, pm in weighted]
+            graph = self._build_chain_graph(self._pms, self._ab, self._alignment)
+            # Update alignment on graph nodes from current PM values
+            for name, pm in weighted:
+                node = graph.nodes[name]
+                node.alpha = pm.alpha
+                node.omega = pm.omega
+                node.u = pm.u
 
-            cl, _ = find_c(al, bl, alpha, omega, u,
-                           optimizer_type=self._optimizer_type)
-            return {name: c for (name, _), c in zip(weighted, cl)}
+            result = find_c(graph, optimizer_type=self._optimizer_type)
+            return {name: c_val for name, (c_val, _) in result.items() if c_val is not None}
         elif len(weighted) == 1:
             return {weighted[0][0]: 0.0}
         else:
             return {}
 
-    def _resolve_dag(self) -> dict[str, float]:
-        """Re-solve DAG LP with alignment read from PM attributes."""
+    def _resolve_traced(self) -> dict[str, float]:
+        """Re-solve LP on traced graph with alignment read from PM attributes."""
         assert self._graph is not None
 
         # Update alignment on graph nodes from PMs
@@ -382,7 +383,7 @@ class Parametrization:
                 node.omega = pm.omega
                 node.u = pm.u
 
-        result = find_c_dag(self._graph, optimizer_type=self._optimizer_type)
+        result = find_c(self._graph, optimizer_type=self._optimizer_type)
 
         c_by_name: dict[str, float] = {}
         for name, (c_val, _r_val) in result.items():
@@ -395,35 +396,55 @@ class Parametrization:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _solve_c_chain_static(pms, ab, optimizer_type, alignment) -> dict[str, float]:
-        """Chain solver: pass full PM chain to LP, get per-PM c values."""
+    def _build_chain_graph(pms, ab, alignment) -> OpGraph:
+        """Build a synthetic linear-chain OpGraph from ordered PMs.
+
+        Wires each weight-bearing PM's successor to the next in discovery
+        order, so the DAG solver sees a simple chain.
+        """
         preset = _ALIGNMENT_PRESETS.get(alignment)
         if preset is None:
             raise ValueError(f"Unknown alignment '{alignment}'. Supported: {list(_ALIGNMENT_PRESETS)}")
 
         alpha_val, omega_val, u_val = preset
 
-        # Filter to weight-bearing PMs in discovery order
+        weighted = [(name, pm) for name, pm in pms if pm.weight is not None]
+        nodes: dict[str, DagNode] = {}
+
+        for idx, (name, pm) in enumerate(weighted):
+            a = pm.a if pm.a is not None else ab[pm.layer_type][0]
+            b = pm.b if pm.b is not None else ab[pm.layer_type][1]
+            preds = [weighted[idx - 1][0]] if idx > 0 else []
+            succs = [weighted[idx + 1][0]] if idx < len(weighted) - 1 else []
+            nodes[name] = DagNode(
+                name=name, a=a, b=b,
+                layer_type=pm.layer_type,
+                has_weight=True,
+                width_dim=pm.width_dim,
+                predecessors=preds,
+                successors=succs,
+                alpha=alpha_val, omega=omega_val, u=u_val,
+            )
+
+        return OpGraph(nodes)
+
+    @staticmethod
+    def _solve_c_chain_static(pms, ab, optimizer_type, alignment) -> dict[str, float]:
+        """Build a synthetic chain graph and solve with the DAG solver."""
         weighted = [(name, pm) for name, pm in pms if pm.weight is not None]
 
         if len(weighted) >= 2:
-            chain_al = [pm.a if pm.a is not None else ab[pm.layer_type][0] for _, pm in weighted]
-            chain_bl = [pm.b if pm.b is not None else ab[pm.layer_type][1] for _, pm in weighted]
-            n = len(chain_al)
-            chain_cl, _ = find_c(
-                chain_al, chain_bl,
-                [alpha_val] * n, [omega_val] * n, [u_val] * n,
-                optimizer_type=optimizer_type,
-            )
-            return {name: c for (name, _), c in zip(weighted, chain_cl)}
+            graph = Parametrization._build_chain_graph(pms, ab, alignment)
+            result = find_c(graph, optimizer_type=optimizer_type)
+            return {name: c_val for name, (c_val, _) in result.items() if c_val is not None}
         elif len(weighted) == 1:
             return {weighted[0][0]: 0.0}
         else:
             return {}
 
     @staticmethod
-    def _solve_c_dag_initial(model, sample_input, ab, optimizer_type, alignment):
-        """DAG solver at init time.  Returns (c_by_name, graph)."""
+    def _solve_c_traced(model, sample_input, ab, optimizer_type, alignment):
+        """Trace data flow and solve for c.  Returns (c_by_name, graph)."""
         from maxp.dag import trace_pm_dag
 
         preset = _ALIGNMENT_PRESETS.get(alignment)
@@ -440,7 +461,7 @@ class Parametrization:
             node.omega = omega_val
             node.u = u_val
 
-        result = find_c_dag(graph, optimizer_type=optimizer_type)
+        result = find_c(graph, optimizer_type=optimizer_type)
 
         c_by_name: dict[str, float] = {}
         for name, (c_val, _r_val) in result.items():

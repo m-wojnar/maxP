@@ -55,7 +55,7 @@ def assert_check(label, condition, detail=""):
 
 section("1. LP Solver — Known Parametrization Recovery")
 
-from maxp.solver import find_c
+from tests.modules.chain_solver import find_c
 
 print("The LP solver takes (a, b) per layer and alignment (alpha, omega, u)")
 print("and returns optimal c values. We verify it recovers known results.\n")
@@ -315,8 +315,8 @@ for trial in range(3):
 
 section("5. LP Solver — Old maxp vs New maxp Cross-Validation")
 
-from maxp.solver import find_c as find_c_old
-from maxp.solver import find_c as find_c_new
+from tests.modules.chain_solver import find_c as find_c_old
+from tests.modules.chain_solver import find_c as find_c_new
 
 print("Run both solvers on identical randomized inputs and verify they")
 print("produce the same c values. The old maxp solver is the trusted")
@@ -706,7 +706,6 @@ for our, opt_g in zip(param.param_groups, opt.param_groups):
 section("11. DAG Solver — Matches Chain for Linear Model")
 
 from maxp.dag import trace_pm_dag
-from maxp.solver import find_c_dag
 
 print("For a linear chain (no forks/merges), the DAG solver should give")
 print("the same c values as the chain solver.\n")

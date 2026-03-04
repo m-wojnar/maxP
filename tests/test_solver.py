@@ -1,6 +1,6 @@
 import numpy as np
 
-from maxp.solver import find_c_adam, find_c_sgd
+from tests.modules.chain_solver import find_c_adam, find_c_sgd
 
 
 def test_solver_adam_returns_valid_lengths_and_nonneg_r():
