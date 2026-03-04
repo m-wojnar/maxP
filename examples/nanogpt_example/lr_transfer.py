@@ -16,6 +16,7 @@ Full run:
 """
 
 import argparse
+import json
 import math
 import os
 import sys
@@ -265,6 +266,18 @@ def main():
         best_lr = min(mup_results[w], key=lambda lr: mup_results[w][lr])
         print(f"    w={w:<4d}  best_lr={best_lr:<8.4f}  loss={mup_results[w][best_lr]:.4f}")
     print(f"{'='*65}")
+
+    # Save results to JSON (always, so we never lose sweep data)
+    json_path = args.output.rsplit(".", 1)[0] + ".json"
+    json_data = {
+        "SP": {str(w): {str(lr): loss for lr, loss in lr_losses.items()}
+               for w, lr_losses in sp_results.items()},
+        "muP": {str(w): {str(lr): loss for lr, loss in lr_losses.items()}
+                for w, lr_losses in mup_results.items()},
+    }
+    with open(json_path, "w") as f:
+        json.dump(json_data, f, indent=2)
+    print(f"Results saved to {json_path}")
 
     if not args.no_plot:
         plot_transfer(sp_results, mup_results, args.widths, filename=args.output)
