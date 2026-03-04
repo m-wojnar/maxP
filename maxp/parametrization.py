@@ -272,6 +272,19 @@ class Parametrization:
                 pm._z0 = captured[name]
                 pm._w0 = pm.weight.detach().clone()
 
+    def _sync_lrs(self, optimizer: torch.optim.Optimizer | None) -> None:
+        """Recompute LRs from current lr_prefactor + c, sync to optimizer."""
+        for group in self._param_groups:
+            if not group.get("maxp_managed", False):
+                continue
+            fan_in = group["fan_in"]
+            c = group["c"]
+            group["lr"] = self.lr_prefactor * (fan_in ** (-c))
+
+        if optimizer is not None:
+            for our_group, opt_group in zip(self._param_groups, optimizer.param_groups):
+                opt_group["lr"] = our_group["lr"]
+
     def step(
         self,
         sample_input: torch.Tensor,
@@ -280,6 +293,11 @@ class Parametrization:
         """Measure alignment, re-solve LP, update optimizer LRs.
 
         Call this after ``optimizer.step()`` each training step.
+
+        LRs are always recomputed from the current ``lr_prefactor`` and
+        per-layer ``c`` values, so external changes to ``lr_prefactor``
+        (e.g. from a schedule) take effect every step.  The LP is only
+        re-solved after warmup and on solve-interval boundaries.
 
         Args:
             sample_input: Batch of inputs for alignment measurement.
@@ -296,8 +314,10 @@ class Parametrization:
             )
 
         if self._step_count <= self._warmup_steps:
+            self._sync_lrs(optimizer)
             return
         if self._step_count % self._solve_interval != 0:
+            self._sync_lrs(optimizer)
             return
 
         # 1. Capture current (z, w) via hooks
@@ -316,27 +336,23 @@ class Parametrization:
                 z0, w0, z, w, fan_in=pm.width_dim, norm_mode=self._norm_mode
             )
 
-        # 3. Re-solve LP (skip update if infeasible with current alignment)
+        # 3. Re-solve LP (skip c update if infeasible with current alignment)
         try:
             c_by_name = self._resolve()
         except ValueError:
+            self._sync_lrs(optimizer)
             return
 
-        # 4. Update param groups
+        # 4. Update c values in param groups
         for group in self._param_groups:
             if not group.get("maxp_managed", False):
                 continue
             name = group["layer_name"]
             if name in c_by_name:
-                c = c_by_name[name]
-                fan_in = group["fan_in"]
-                group["lr"] = self.lr_prefactor * (fan_in ** (-c))
-                group["c"] = float(c)
+                group["c"] = float(c_by_name[name])
 
-        # 5. Sync to optimizer if provided
-        if optimizer is not None:
-            for our_group, opt_group in zip(self._param_groups, optimizer.param_groups):
-                opt_group["lr"] = our_group["lr"]
+        # 5. Recompute LRs and sync
+        self._sync_lrs(optimizer)
 
     def _resolve(self) -> dict[str, float]:
         """Re-solve LP with current per-PM alignment values."""
