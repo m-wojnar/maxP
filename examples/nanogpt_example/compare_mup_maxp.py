@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""muP vs maxP comparison on larger Shakespeare GPT with WSD schedule.
+"""muP vs maxP comparison with WSD schedule.
 
-Single LR (0.1), 10k steps, d_model=512, 8 layers.
-Compares muP (no-alignment) vs muP (full-alignment) vs maxP (dynamic).
+Supports Shakespeare (char-level, default) and OpenWebText (GPT-2 BPE).
 
 Usage:
     python compare_mup_maxp.py
     python compare_mup_maxp.py --steps 5000 --d-model 256
+    python compare_mup_maxp.py --dataset openwebtext --preset gpt2-debug --steps 1000
+    python compare_mup_maxp.py --dataset openwebtext --preset gpt2-small --steps 5000
     # Quick smoke test:
     python compare_mup_maxp.py --d-model 128 --n-layers 4 --n-heads 4 --steps 500 --warmup 50 --decay 100 --alignment-warmup 5
 """
@@ -18,6 +19,7 @@ import math
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -28,11 +30,21 @@ from examples.nanogpt_example.parametrized_gpt import ParametrizedGPT
 from examples.nanogpt_example.sweep import (
     RunResult,
     batch_iter,
+    batch_iter_mmap,
     get_device,
+    load_openwebtext,
     load_shakespeare,
 )
 from examples.nanogpt_example.replot import plot_comparison
 from maxp import Parametrization
+
+
+# ── Presets ──────────────────────────────────────────────────────────────
+
+PRESETS = {
+    "gpt2-small": dict(d_model=768, n_heads=12, n_layers=12, d_ff=3072, seq_len=1024),
+    "gpt2-debug": dict(d_model=256, n_heads=8, n_layers=6, d_ff=1024, seq_len=256),
+}
 
 
 # ── Result caching ───────────────────────────────────────────────────────
@@ -103,12 +115,20 @@ def _make_model(d_model, n_heads, n_layers, d_ff, vocab_size, seq_len, device):
 
 # ── Training functions ───────────────────────────────────────────────────
 
+def _make_batch_iter(data, seq_len, batch_size, device):
+    """Create appropriate batch iterator for tensor or mmap data."""
+    if isinstance(data, torch.Tensor):
+        return batch_iter(data, seq_len, batch_size)
+    else:
+        return batch_iter_mmap(data, seq_len, batch_size, device)
+
+
 def train_mup(
     d_model, n_heads, n_layers, d_ff, data, vocab_size, *,
-    lr, n_steps, seq_len, batch_size, seed, warmup, decay,
+    lr, n_steps, seq_len, batch_size, seed, warmup, decay, device=None,
 ) -> RunResult:
     """muP with WSD schedule (static alignment)."""
-    device = data.device
+    device = device or data.device
     torch.manual_seed(seed)
     model, sample_input = _make_model(d_model, n_heads, n_layers, d_ff, vocab_size, seq_len, device)
 
@@ -122,7 +142,7 @@ def train_mup(
     optimizer = torch.optim.AdamW(param.param_groups, lr=lr)
 
     losses = []
-    it = batch_iter(data, seq_len, batch_size)
+    it = _make_batch_iter(data, seq_len, batch_size, device)
     pbar = tqdm(range(n_steps), desc="muP+WSD", leave=False, ncols=90)
     for step in pbar:
         # Apply WSD schedule
@@ -148,10 +168,10 @@ def train_mup(
 
 def train_mup_noalign(
     d_model, n_heads, n_layers, d_ff, data, vocab_size, *,
-    lr, n_steps, seq_len, batch_size, seed, warmup, decay,
+    lr, n_steps, seq_len, batch_size, seed, warmup, decay, device=None,
 ) -> RunResult:
     """muP with WSD schedule (no alignment assumption)."""
-    device = data.device
+    device = device or data.device
     torch.manual_seed(seed)
     model, sample_input = _make_model(d_model, n_heads, n_layers, d_ff, vocab_size, seq_len, device)
 
@@ -165,7 +185,7 @@ def train_mup_noalign(
     optimizer = torch.optim.AdamW(param.param_groups, lr=lr)
 
     losses = []
-    it = batch_iter(data, seq_len, batch_size)
+    it = _make_batch_iter(data, seq_len, batch_size, device)
     pbar = tqdm(range(n_steps), desc="muP(no-align)+WSD", leave=False, ncols=90)
     for step in pbar:
         factor = wsd_factor(step, n_steps, warmup=warmup, decay=decay)
@@ -188,13 +208,26 @@ def train_mup_noalign(
     return RunResult(method="muP (no-align)", lr=lr, losses=losses)
 
 
+def _sample_from_data(data, seq_len, n_samples, device):
+    """Sample sequences from tensor or mmap data, returning a tensor on device."""
+    if isinstance(data, torch.Tensor):
+        idx = torch.randint(0, data.shape[0] - seq_len - 1, (n_samples,))
+        return torch.stack([data[i : i + seq_len] for i in idx])
+    else:
+        idx = torch.randint(0, len(data) - seq_len - 1, (n_samples,))
+        return torch.stack([
+            torch.from_numpy(data[i:i+seq_len].astype(np.int64)) for i in idx
+        ]).to(device)
+
+
 def train_maxp(
     d_model, n_heads, n_layers, d_ff, data, vocab_size, *,
     lr, n_steps, seq_len, batch_size, seed,
     warmup, decay, alignment_warmup, solve_interval, sample_size, c_ema,
+    device=None,
 ) -> RunResult:
     """maxP with WSD schedule (dynamic alignment)."""
-    device = data.device
+    device = device or data.device
     torch.manual_seed(seed)
     model, sample_input = _make_model(d_model, n_heads, n_layers, d_ff, vocab_size, seq_len, device)
 
@@ -212,10 +245,7 @@ def train_maxp(
     optimizer = torch.optim.AdamW(param.param_groups, lr=lr)
 
     # Build sample input for alignment measurement
-    sample_x = torch.stack([
-        data[i : i + seq_len]
-        for i in torch.randint(0, data.shape[0] - seq_len - 1, (sample_size,))
-    ])
+    sample_x = _sample_from_data(data, seq_len, sample_size, device)
     param.capture_initial(sample_x)
 
     # Track per-layer alignment and LR
@@ -225,7 +255,7 @@ def train_maxp(
             layer_history[name] = []
 
     losses = []
-    it = batch_iter(data, seq_len, batch_size)
+    it = _make_batch_iter(data, seq_len, batch_size, device)
     pbar = tqdm(range(n_steps), desc="maxP+WSD", leave=False, ncols=90)
     for step in pbar:
         # Apply WSD schedule before forward pass
@@ -270,14 +300,22 @@ def train_maxp(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="muP vs maxP comparison with WSD schedule on Shakespeare GPT"
+        description="muP vs maxP comparison with WSD schedule"
     )
-    parser.add_argument("--d-model", type=int, default=512)
-    parser.add_argument("--n-heads", type=int, default=8)
-    parser.add_argument("--n-layers", type=int, default=8)
+    parser.add_argument("--dataset", type=str, default="shakespeare",
+                        choices=["shakespeare", "openwebtext"],
+                        help="Dataset to train on")
+    parser.add_argument("--preset", type=str, default="none",
+                        choices=["none", "gpt2-small", "gpt2-debug"],
+                        help="Model preset (sets d_model, n_heads, etc.)")
+    parser.add_argument("--data-dir", type=str, default=None,
+                        help="Data directory (default: ./data/<dataset>)")
+    parser.add_argument("--d-model", type=int, default=None)
+    parser.add_argument("--n-heads", type=int, default=None)
+    parser.add_argument("--n-layers", type=int, default=None)
     parser.add_argument("--d-ff", type=int, default=None,
                         help="FFN hidden dim (default: 4 * d_model)")
-    parser.add_argument("--seq-len", type=int, default=64)
+    parser.add_argument("--seq-len", type=int, default=None)
     parser.add_argument("--steps", type=int, default=10000)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=0.1)
@@ -296,12 +334,22 @@ def main():
     parser.add_argument("--output", type=str, default="compare_mup_maxp.png")
     args = parser.parse_args()
 
-    d_ff = args.d_ff or 4 * args.d_model
+    # Apply preset defaults, then explicit overrides
+    defaults = {"d_model": 512, "n_heads": 8, "n_layers": 8, "d_ff": None, "seq_len": 64}
+    if args.preset != "none":
+        defaults.update(PRESETS[args.preset])
+
+    d_model = args.d_model or defaults["d_model"]
+    n_heads = args.n_heads or defaults["n_heads"]
+    n_layers = args.n_layers or defaults["n_layers"]
+    seq_len = args.seq_len or defaults["seq_len"]
+    d_ff = args.d_ff or defaults["d_ff"] or 4 * d_model
 
     device = get_device()
     print(f"Device: {device}")
-    print(f"d_model={args.d_model}, n_heads={args.n_heads}, "
-          f"n_layers={args.n_layers}, d_ff={d_ff}, seq_len={args.seq_len}")
+    print(f"Dataset: {args.dataset}" + (f" (preset: {args.preset})" if args.preset != "none" else ""))
+    print(f"d_model={d_model}, n_heads={n_heads}, "
+          f"n_layers={n_layers}, d_ff={d_ff}, seq_len={seq_len}")
     print(f"LR={args.lr}, steps={args.steps}, batch_size={args.batch_size}")
     print(f"WSD: warmup={args.warmup}, decay={args.decay}")
     print(f"maxP: alignment_warmup={args.alignment_warmup}, "
@@ -309,25 +357,34 @@ def main():
           f"c_ema={args.c_ema}")
     print()
 
-    # Cache setup — keyed on all hyperparams so changing config invalidates
+    # Cache setup — keyed on all hyperparams + dataset so changing config invalidates
     cache_dir = Path(args.output).parent / ".result_cache"
     cache_hparams = dict(
-        d_model=args.d_model, n_heads=args.n_heads, n_layers=args.n_layers,
-        d_ff=d_ff, seq_len=args.seq_len, steps=args.steps,
+        dataset=args.dataset,
+        d_model=d_model, n_heads=n_heads, n_layers=n_layers,
+        d_ff=d_ff, seq_len=seq_len, steps=args.steps,
         batch_size=args.batch_size, lr=args.lr, warmup=args.warmup,
         decay=args.decay, seed=args.seed,
     )
 
-    print("Loading Shakespeare...")
-    data, vocab_size, chars = load_shakespeare(device)
-    print(f"  {len(data):,} chars, vocab size: {vocab_size}")
+    # Load data
+    if args.dataset == "openwebtext":
+        data_dir = args.data_dir or "./data/openwebtext"
+        print(f"Loading OpenWebText from {data_dir}...")
+        data, vocab_size = load_openwebtext(data_dir)
+        print(f"  {len(data):,} tokens, vocab size: {vocab_size}")
+    else:
+        print("Loading Shakespeare...")
+        data, vocab_size, chars = load_shakespeare(device)
+        print(f"  {len(data):,} chars, vocab size: {vocab_size}")
 
     common = dict(
-        d_model=args.d_model, n_heads=args.n_heads, n_layers=args.n_layers,
+        d_model=d_model, n_heads=n_heads, n_layers=n_layers,
         d_ff=d_ff, data=data, vocab_size=vocab_size,
-        lr=args.lr, n_steps=args.steps, seq_len=args.seq_len,
+        lr=args.lr, n_steps=args.steps, seq_len=seq_len,
         batch_size=args.batch_size, seed=args.seed,
         warmup=args.warmup, decay=args.decay,
+        device=device,
     )
 
     # ── maxP (run first — slowest, want to cache early) ──

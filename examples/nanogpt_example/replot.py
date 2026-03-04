@@ -266,6 +266,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="Regenerate comparison plots from cached results"
     )
+    parser.add_argument("--dataset", type=str, default="shakespeare",
+                        choices=["shakespeare", "openwebtext"],
+                        help="Dataset (must match the training run)")
     parser.add_argument("--d-model", type=int, default=512)
     parser.add_argument("--n-heads", type=int, default=8)
     parser.add_argument("--n-layers", type=int, default=8)
@@ -292,6 +295,7 @@ def main():
     cache_dir = Path(args.cache_dir) if args.cache_dir else Path(args.output).parent / ".result_cache"
 
     cache_hparams = dict(
+        dataset=args.dataset,
         d_model=args.d_model, n_heads=args.n_heads, n_layers=args.n_layers,
         d_ff=d_ff, seq_len=args.seq_len, steps=args.steps,
         batch_size=args.batch_size, lr=args.lr, warmup=args.warmup,
