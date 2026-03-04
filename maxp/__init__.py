@@ -1,37 +1,8 @@
-"""
-maxP: Maximal Parametrization LR Scheduler for PyTorch
+"""maxp: ABC parametrization for PyTorch neural networks."""
 
-A learning rate scheduler that dynamically adjusts per-layer learning rates
-using alignment measurements between initial and current weights/activations,
-solved via linear programming.
-"""
-
-from maxp.scheduler import MaxPScheduler, ChainedMaxPScheduler
-from maxp.tracer import Tracer, LayerSnapshot, StepTrace, TraceWindow
+from maxp.module import ParametrizedModule
+from maxp.parametrization import Parametrization
 from maxp.alignment import compute_alignment
-from maxp.solver import find_c, find_c_adam, find_c_sgd
-from maxp.utils import (
-    ABCParametrization, ScaledLinear, 
-    create_param_groups, get_abc_parametrization, get_linear_layers, initialize_abc_weights
-)
-
-__version__ = "0.1.0"
-
-__all__ = [
-    "MaxPScheduler",
-    "ChainedMaxPScheduler",
-    "Tracer",
-    "LayerSnapshot",
-    "StepTrace",
-    "TraceWindow",
-    "compute_alignment",
-    "find_c",
-    "find_c_adam",
-    "find_c_sgd",
-    "ABCParametrization",
-    "ScaledLinear",
-    "create_param_groups",
-    "get_abc_parametrization",
-    "get_linear_layers",
-    "initialize_abc_weights",
-]
+from maxp.trace import TracedOp, ClassifiedOp, trace_forward, classify, measure_activations
+from maxp.dag import OpGraph, trace_pm_dag
+from maxp.diagnose import diagnose_axis, print_axis, plot_axis
