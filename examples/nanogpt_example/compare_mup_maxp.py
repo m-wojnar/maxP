@@ -153,7 +153,7 @@ def train_mup(
 def train_maxp(
     d_model, n_heads, n_layers, d_ff, data, vocab_size, *,
     lr, n_steps, seq_len, batch_size, seed,
-    warmup, decay, alignment_warmup, solve_interval, sample_size,
+    warmup, decay, alignment_warmup, solve_interval, sample_size, c_ema,
 ) -> RunResult:
     """maxP with WSD schedule (dynamic alignment)."""
     device = data.device
@@ -168,6 +168,7 @@ def train_maxp(
         warmup_steps=alignment_warmup,
         solve_interval=solve_interval,
         sample_size=sample_size,
+        c_ema=c_ema,
         sample_input=sample_input,
     )
     optimizer = torch.optim.AdamW(param.param_groups, lr=lr)
@@ -393,6 +394,8 @@ def main():
                         help="Steps before first alignment LP re-solve")
     parser.add_argument("--solve-interval", type=int, default=1)
     parser.add_argument("--sample-size", type=int, default=64)
+    parser.add_argument("--c-ema", type=float, default=0.0,
+                        help="EMA smoothing for c values (0=instant, 0.99=very slow)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-plot", action="store_true")
     parser.add_argument("--output", type=str, default="compare_mup_maxp.png")
@@ -407,7 +410,8 @@ def main():
     print(f"LR={args.lr}, steps={args.steps}, batch_size={args.batch_size}")
     print(f"WSD: warmup={args.warmup}, decay={args.decay}")
     print(f"maxP: alignment_warmup={args.alignment_warmup}, "
-          f"solve_interval={args.solve_interval}, sample_size={args.sample_size}")
+          f"solve_interval={args.solve_interval}, sample_size={args.sample_size}, "
+          f"c_ema={args.c_ema}")
     print()
 
     # Cache setup — keyed on all hyperparams so changing config invalidates
@@ -435,7 +439,8 @@ def main():
     maxp_hparams = {**cache_hparams,
                     "alignment_warmup": args.alignment_warmup,
                     "solve_interval": args.solve_interval,
-                    "sample_size": args.sample_size}
+                    "sample_size": args.sample_size,
+                    "c_ema": args.c_ema}
     maxp_key = _cache_key("maxP", **maxp_hparams)
     maxp_cache = _cache_path(cache_dir, "maxP", maxp_key)
     maxp_result = _load_result(maxp_cache)
@@ -447,8 +452,8 @@ def main():
             **common,
             alignment_warmup=args.alignment_warmup,
             solve_interval=args.solve_interval,
-
             sample_size=args.sample_size,
+            c_ema=args.c_ema,
         )
         _save_result(maxp_cache, maxp_result)
     maxp_tag = "DIV" if maxp_result.diverged else f"{maxp_result.final_loss:.4f}"

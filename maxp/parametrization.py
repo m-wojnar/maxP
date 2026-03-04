@@ -87,6 +87,9 @@ class Parametrization:
         solve_interval: Re-solve every N steps (default 1).
         sample_size: Max batch samples kept for alignment measurement (default 32).
         norm_mode: ``"rms"`` or ``"spectral"`` for alignment computation.
+        c_ema: EMA factor for smoothing ``c`` values toward solver targets.
+            Each step: ``c = c_ema * c + (1 - c_ema) * c_target``.
+            0.0 means instant updates (default), 0.99 means very slow blending.
     """
 
     def __init__(
@@ -105,6 +108,7 @@ class Parametrization:
         solve_interval: int = 1,
         sample_size: int = 32,
         norm_mode: str = "rms",
+        c_ema: float = 0.0,
     ):
         self.model = model
         self.lr_prefactor = lr_prefactor
@@ -214,8 +218,15 @@ class Parametrization:
         self._solve_interval = solve_interval
         self._sample_size = sample_size
         self._norm_mode = norm_mode
+        self._c_ema = c_ema
         self._step_count = 0
         self._graph = graph
+
+        # c_target tracks the latest solver output; c blends toward it each step
+        self._c_target: dict[str, float] = {
+            group["layer_name"]: group["c"]
+            for group in groups if group.get("maxp_managed", False)
+        }
 
         # Set initial alignment on each PM from the preset
         alpha_val, omega_val, u_val = _ALIGNMENT_PRESETS[alignment]
@@ -273,10 +284,19 @@ class Parametrization:
                 pm._w0 = pm.weight.detach().clone()
 
     def _sync_lrs(self, optimizer: torch.optim.Optimizer | None) -> None:
-        """Recompute LRs from current lr_prefactor + c, sync to optimizer."""
+        """Recompute LRs from current lr_prefactor + c, sync to optimizer.
+
+        When ``c_ema > 0``, blends each group's ``c`` toward ``c_target``
+        every call: ``c = c_ema * c + (1 - c_ema) * c_target``.
+        """
+        ema = self._c_ema
         for group in self._param_groups:
             if not group.get("maxp_managed", False):
                 continue
+            if ema > 0:
+                name = group["layer_name"]
+                target = self._c_target.get(name, group["c"])
+                group["c"] = ema * group["c"] + (1 - ema) * target
             fan_in = group["fan_in"]
             c = group["c"]
             group["lr"] = self.lr_prefactor * (fan_in ** (-c))
@@ -343,13 +363,15 @@ class Parametrization:
             self._sync_lrs(optimizer)
             return
 
-        # 4. Update c values in param groups
+        # 4. Update c targets (blending happens in _sync_lrs)
         for group in self._param_groups:
             if not group.get("maxp_managed", False):
                 continue
             name = group["layer_name"]
             if name in c_by_name:
-                group["c"] = float(c_by_name[name])
+                self._c_target[name] = float(c_by_name[name])
+                if self._c_ema == 0:
+                    group["c"] = float(c_by_name[name])
 
         # 5. Recompute LRs and sync
         self._sync_lrs(optimizer)
