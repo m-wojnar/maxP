@@ -12,6 +12,8 @@ Usage:
 """
 
 import argparse
+import hashlib
+import json
 import math
 import sys
 from dataclasses import dataclass, field
@@ -35,6 +37,44 @@ from examples.nanogpt_example.sweep import (
     smooth,
 )
 from maxp import Parametrization
+
+
+# ── Result caching ───────────────────────────────────────────────────────
+
+def _cache_key(method: str, **kwargs) -> str:
+    """Deterministic hash of method + hyperparams."""
+    d = {"method": method, **{k: v for k, v in sorted(kwargs.items())}}
+    return hashlib.sha256(json.dumps(d).encode()).hexdigest()[:12]
+
+
+def _cache_path(cache_dir: Path, method: str, key: str) -> Path:
+    return cache_dir / f"{method}_{key}.json"
+
+
+def _save_result(path: Path, result: RunResult) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "method": result.method,
+        "lr": result.lr,
+        "losses": result.losses,
+        "layer_history": result.layer_history,
+    }
+    with open(path, "w") as f:
+        json.dump(data, f)
+    print(f"  Cached to {path}")
+
+
+def _load_result(path: Path) -> RunResult | None:
+    if not path.exists():
+        return None
+    with open(path, "r") as f:
+        data = json.load(f)
+    return RunResult(
+        method=data["method"],
+        lr=data["lr"],
+        losses=data["losses"],
+        layer_history=data.get("layer_history", {}),
+    )
 
 
 # ── WSD schedule ─────────────────────────────────────────────────────────
@@ -370,6 +410,15 @@ def main():
           f"solve_interval={args.solve_interval}, sample_size={args.sample_size}")
     print()
 
+    # Cache setup — keyed on all hyperparams so changing config invalidates
+    cache_dir = Path(args.output).parent / ".result_cache"
+    cache_hparams = dict(
+        d_model=args.d_model, n_heads=args.n_heads, n_layers=args.n_layers,
+        d_ff=d_ff, seq_len=args.seq_len, steps=args.steps,
+        batch_size=args.batch_size, lr=args.lr, warmup=args.warmup,
+        decay=args.decay, seed=args.seed,
+    )
+
     print("Loading Shakespeare...")
     data, vocab_size, chars = load_shakespeare(device)
     print(f"  {len(data):,} chars, vocab size: {vocab_size}")
@@ -382,18 +431,38 @@ def main():
         warmup=args.warmup, decay=args.decay,
     )
 
-    print("\n[1/2] Training muP + WSD...")
-    mup_result = train_mup(**common)
+    # ── muP ──
+    mup_key = _cache_key("muP", **cache_hparams)
+    mup_cache = _cache_path(cache_dir, "muP", mup_key)
+    mup_result = _load_result(mup_cache)
+    if mup_result is not None:
+        print(f"\n[1/2] muP + WSD — loaded from cache")
+    else:
+        print(f"\n[1/2] Training muP + WSD...")
+        mup_result = train_mup(**common)
+        _save_result(mup_cache, mup_result)
     mup_tag = "DIV" if mup_result.diverged else f"{mup_result.final_loss:.4f}"
     print(f"  → muP final_loss={mup_tag}")
 
-    print("\n[2/2] Training maxP + WSD...")
-    maxp_result = train_maxp(
-        **common,
-        warmup_steps=args.warmup_steps,
-        solve_interval=args.solve_interval,
-        sample_size=args.sample_size,
-    )
+    # ── maxP ──
+    maxp_hparams = {**cache_hparams,
+                    "warmup_steps": args.warmup_steps,
+                    "solve_interval": args.solve_interval,
+                    "sample_size": args.sample_size}
+    maxp_key = _cache_key("maxP", **maxp_hparams)
+    maxp_cache = _cache_path(cache_dir, "maxP", maxp_key)
+    maxp_result = _load_result(maxp_cache)
+    if maxp_result is not None:
+        print(f"\n[2/2] maxP + WSD — loaded from cache")
+    else:
+        print(f"\n[2/2] Training maxP + WSD...")
+        maxp_result = train_maxp(
+            **common,
+            warmup_steps=args.warmup_steps,
+            solve_interval=args.solve_interval,
+            sample_size=args.sample_size,
+        )
+        _save_result(maxp_cache, maxp_result)
     maxp_tag = "DIV" if maxp_result.diverged else f"{maxp_result.final_loss:.4f}"
     print(f"  → maxP final_loss={maxp_tag}")
 
