@@ -389,8 +389,8 @@ def main():
                         help="WSD warmup steps")
     parser.add_argument("--decay", type=int, default=1000,
                         help="WSD decay steps (at end of training)")
-    parser.add_argument("--warmup-steps", type=int, default=500,
-                        help="maxP alignment warmup steps")
+    parser.add_argument("--warmup-steps", type=int, default=10,
+                        help="maxP alignment warmup steps (before first LP re-solve)")
     parser.add_argument("--solve-interval", type=int, default=1)
     parser.add_argument("--sample-size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
