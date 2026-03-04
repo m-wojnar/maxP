@@ -67,8 +67,6 @@ def find_c_adam(
     Returns:
         Dict mapping node name -> (c or None for activation-only, r).
     """
-    from maxp.dag import MergeType
-
     if solver is None:
         solver = plp.PULP_CBC_CMD(msg=False)
 
@@ -187,8 +185,6 @@ def find_c_sgd(
 
     Same structure as Adam but with gradient scaling terms from the sink nodes.
     """
-    from maxp.dag import MergeType
-
     if solver is None:
         solver = plp.PULP_CBC_CMD(msg=False)
 

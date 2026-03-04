@@ -145,39 +145,3 @@ def compute_alignment(
                 u = torch.mean(o_u_n / (dz_n * dw_n)).item()
 
     return _sanitize(alpha), _sanitize(omega), _sanitize(u)
-
-
-def compute_alignments_for_pms(
-    snapshots: list[tuple[tuple[Tensor, Tensor], tuple[Tensor, Tensor]] | None],
-    fan_ins: list[int],
-    norm_mode: str = "rms",
-) -> tuple[list[float], list[float], list[float]]:
-    """Compute alignment for a list of PM snapshots.
-
-    Args:
-        snapshots: List of ``((z0, w0), (z, w))`` per PM, or ``None``
-            for activation-only PMs.
-        fan_ins: Fan-in per PM.
-        norm_mode: ``"rms"`` or ``"spectral"``.
-
-    Returns:
-        Tuple of ``(alpha_list, omega_list, u_list)``.
-    """
-    alpha_list: list[float] = []
-    omega_list: list[float] = []
-    u_list: list[float] = []
-
-    for i, snap in enumerate(snapshots):
-        if snap is None:
-            # Default: full alignment assumption for skipped PMs
-            alpha_list.append(1.0)
-            omega_list.append(0.5)
-            u_list.append(1.0)
-            continue
-        (z0, w0), (z, w) = snap
-        a, o, uu = compute_alignment(z0, w0, z, w, fan_ins[i], norm_mode)
-        alpha_list.append(a)
-        omega_list.append(o)
-        u_list.append(uu)
-
-    return alpha_list, omega_list, u_list

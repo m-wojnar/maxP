@@ -7,21 +7,13 @@ import torch.nn as nn
 
 from maxp.solver import find_c
 from maxp.module import ParametrizedModule
-from maxp.dag import DagNode, OpGraph
+from maxp.dag import DagNode, OpGraph, _DEFAULT_AB
 
 
 # Alignment assumptions: (alpha, omega, u) per layer
 _ALIGNMENT_PRESETS = {
     "full": (1.0, 0.5, 1.0),
     "no": (0.5, 0.5, 0.5),
-}
-
-# Default (a, b) per layer type for muP
-# Constraints: embedding a+b=0, hidden a+b=0.5, readout a+b>=0.5
-_DEFAULT_AB = {
-    "embedding": (-0.5, 0.5),  # a+b=0, scale=sqrt(n), std=1/sqrt(n)
-    "hidden":    (0.0, 0.5),   # a+b=0.5, no multiplier, std=1/sqrt(n)
-    "readout":   (0.5, 0.5),   # a+b=1.0, scale=1/sqrt(n), std=1/sqrt(n)
 }
 
 
@@ -216,11 +208,8 @@ class Parametrization:
 
         # Phase 2 state
         self._pms = pms
-        self._ab = ab
         self._c_fixed = c_fixed or None
         self._optimizer_type = optimizer_type
-        self._alignment = alignment
-        self._std_prefactor = std_prefactor
         self._warmup_steps = warmup_steps
         self._solve_interval = solve_interval
         self._sample_size = sample_size

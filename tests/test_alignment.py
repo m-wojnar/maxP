@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 
-from maxp.alignment import compute_alignment, compute_alignments_for_pms
+from maxp.alignment import compute_alignment
 
 
 class TestComputeAlignment:
@@ -100,36 +100,3 @@ class TestComputeAlignment:
         assert math.isfinite(u)
 
 
-class TestComputeAlignmentsForPMs:
-    """Tests for the batch helper."""
-
-    def test_none_snapshots_get_defaults(self):
-        """None entries produce default full-alignment values."""
-        alpha, omega, u = compute_alignments_for_pms(
-            [None, None], fan_ins=[16, 16]
-        )
-        assert alpha == [1.0, 1.0]
-        assert omega == [0.5, 0.5]
-        assert u == [1.0, 1.0]
-
-    def test_mixed_none_and_real(self):
-        """Mix of None and real snapshots."""
-        torch.manual_seed(5)
-        z0 = torch.randn(4, 8)
-        w0 = torch.randn(8, 8)
-        z = z0 + 0.05 * torch.randn(4, 8)
-        w = w0 + 0.05 * torch.randn(8, 8)
-
-        snapshots = [
-            None,
-            ((z0, w0), (z, w)),
-        ]
-        alpha, omega, u = compute_alignments_for_pms(snapshots, fan_ins=[8, 8])
-        # First is default
-        assert alpha[0] == 1.0
-        assert omega[0] == 0.5
-        assert u[0] == 1.0
-        # Second is computed
-        assert math.isfinite(alpha[1])
-        assert math.isfinite(omega[1])
-        assert math.isfinite(u[1])

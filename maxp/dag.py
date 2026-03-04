@@ -105,11 +105,11 @@ class OpGraph:
                     raise ValueError(f"Inconsistent edge: '{pred}' -> '{name}'")
 
 
-# Default (a, b) per layer type — same as in parametrization.py
+# Default (a, b) per layer type for muP
 _DEFAULT_AB = {
-    "embedding": (-0.5, 0.5),
-    "hidden":    (0.0, 0.5),
-    "readout":   (0.5, 0.5),
+    "embedding": (-0.5, 0.5),  # a+b=0, scale=sqrt(n), std=1/sqrt(n)
+    "hidden":    (0.0, 0.5),   # a+b=0.5, no multiplier, std=1/sqrt(n)
+    "readout":   (0.5, 0.5),   # a+b=1.0, scale=1/sqrt(n), std=1/sqrt(n)
 }
 
 
