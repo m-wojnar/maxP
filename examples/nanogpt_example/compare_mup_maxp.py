@@ -2,7 +2,7 @@
 """muP vs maxP comparison on larger Shakespeare GPT with WSD schedule.
 
 Single LR (0.1), 10k steps, d_model=512, 8 layers.
-Compares static alignment (muP) vs dynamic alignment (maxP).
+Compares muP (no-alignment) vs muP (full-alignment) vs maxP (dynamic).
 
 Usage:
     python compare_mup_maxp.py
@@ -144,6 +144,48 @@ def train_mup(
 
     pbar.close()
     return RunResult(method="muP", lr=lr, losses=losses)
+
+
+def train_mup_noalign(
+    d_model, n_heads, n_layers, d_ff, data, vocab_size, *,
+    lr, n_steps, seq_len, batch_size, seed, warmup, decay,
+) -> RunResult:
+    """muP with WSD schedule (no alignment assumption)."""
+    device = data.device
+    torch.manual_seed(seed)
+    model, sample_input = _make_model(d_model, n_heads, n_layers, d_ff, vocab_size, seq_len, device)
+
+    param = Parametrization(
+        model,
+        lr_prefactor=lr,
+        optimizer_type="adam",
+        alignment="no",
+        sample_input=sample_input,
+    )
+    optimizer = torch.optim.AdamW(param.param_groups, lr=lr)
+
+    losses = []
+    it = batch_iter(data, seq_len, batch_size)
+    pbar = tqdm(range(n_steps), desc="muP(no-align)+WSD", leave=False, ncols=90)
+    for step in pbar:
+        factor = wsd_factor(step, n_steps, warmup=warmup, decay=decay)
+        param.lr_prefactor = lr * factor
+        param._sync_lrs(optimizer)
+
+        xb, yb = next(it)
+        logits = model(xb)
+        loss = F.cross_entropy(logits.reshape(-1, vocab_size), yb.reshape(-1))
+        if not math.isfinite(loss.item()):
+            losses.append(float("nan"))
+            break
+        losses.append(loss.item())
+        pbar.set_postfix(loss=f"{loss.item():.4f}")
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    pbar.close()
+    return RunResult(method="muP (no-align)", lr=lr, losses=losses)
 
 
 def train_maxp(
@@ -288,7 +330,7 @@ def main():
         warmup=args.warmup, decay=args.decay,
     )
 
-    # ── maxP (run first — slower, want to cache early) ──
+    # ── maxP (run first — slowest, want to cache early) ──
     maxp_hparams = {**cache_hparams,
                     "alignment_warmup": args.alignment_warmup,
                     "solve_interval": args.solve_interval,
@@ -298,9 +340,9 @@ def main():
     maxp_cache = _cache_path(cache_dir, "maxP", maxp_key)
     maxp_result = _load_result(maxp_cache)
     if maxp_result is not None:
-        print(f"\n[1/2] maxP + WSD — loaded from cache")
+        print("\n[1/3] maxP + WSD — loaded from cache")
     else:
-        print(f"\n[1/2] Training maxP + WSD...")
+        print("\n[1/3] Training maxP + WSD...")
         maxp_result = train_maxp(
             **common,
             alignment_warmup=args.alignment_warmup,
@@ -312,27 +354,42 @@ def main():
     maxp_tag = "DIV" if maxp_result.diverged else f"{maxp_result.final_loss:.4f}"
     print(f"  → maxP final_loss={maxp_tag}")
 
-    # ── muP ──
+    # ── muP (full alignment) ──
     mup_key = _cache_key("muP", **cache_hparams)
     mup_cache = _cache_path(cache_dir, "muP", mup_key)
     mup_result = _load_result(mup_cache)
     if mup_result is not None:
-        print(f"\n[2/2] muP + WSD — loaded from cache")
+        print("\n[2/3] muP (full) + WSD — loaded from cache")
     else:
-        print(f"\n[2/2] Training muP + WSD...")
+        print("\n[2/3] Training muP (full) + WSD...")
         mup_result = train_mup(**common)
         _save_result(mup_cache, mup_result)
     mup_tag = "DIV" if mup_result.diverged else f"{mup_result.final_loss:.4f}"
     print(f"  → muP final_loss={mup_tag}")
 
+    # ── muP (no alignment) ──
+    noalign_hparams = {**cache_hparams, "alignment": "no"}
+    noalign_key = _cache_key("muP (no-align)", **noalign_hparams)
+    noalign_cache = _cache_path(cache_dir, "muP_no-align", noalign_key)
+    noalign_result = _load_result(noalign_cache)
+    if noalign_result is not None:
+        print("\n[3/3] muP (no-align) + WSD — loaded from cache")
+    else:
+        print("\n[3/3] Training muP (no-align) + WSD...")
+        noalign_result = train_mup_noalign(**common)
+        _save_result(noalign_cache, noalign_result)
+    noalign_tag = "DIV" if noalign_result.diverged else f"{noalign_result.final_loss:.4f}"
+    print(f"  → muP (no-align) final_loss={noalign_tag}")
+
     print(f"\n{'='*50}")
-    print(f"  muP  loss={mup_tag}")
-    print(f"  maxP loss={maxp_tag}")
+    print(f"  muP (no-align) loss={noalign_tag}")
+    print(f"  muP (full)     loss={mup_tag}")
+    print(f"  maxP           loss={maxp_tag}")
     print(f"{'='*50}")
 
     if not args.no_plot:
         plot_comparison(
-            mup_result, maxp_result,
+            noalign_result, mup_result, maxp_result,
             n_steps=args.steps,
             warmup=args.warmup,
             decay=args.decay,

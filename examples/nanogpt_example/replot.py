@@ -116,8 +116,7 @@ def _op_legend_handles(names: list[str]):
 # ── Plotting ─────────────────────────────────────────────────────────────
 
 def plot_comparison(
-    mup_result: RunResult,
-    maxp_result: RunResult,
+    *results: RunResult,
     n_steps: int,
     warmup: int,
     decay: int,
@@ -126,7 +125,9 @@ def plot_comparison(
 ):
     import matplotlib.pyplot as plt
 
-    has_hist = bool(maxp_result.layer_history)
+    # Find the first result with layer history (maxP)
+    hist_result = next((r for r in results if r.layer_history), None)
+    has_hist = hist_result is not None
 
     fig = plt.figure(figsize=(18, 10))
     gs = fig.add_gridspec(2, 4, hspace=0.35, wspace=0.35)
@@ -140,14 +141,15 @@ def plot_comparison(
     ax_table = fig.add_subplot(gs[1, 3])
 
     method_style = {
-        "muP": {"color": "#1f77b4", "ls": "-"},
-        "maxP": {"color": "#d62728", "ls": "--"},
+        "muP (no-align)": {"color": "#7f7f7f", "ls": "-"},
+        "muP":            {"color": "#1f77b4", "ls": "-"},
+        "maxP":           {"color": "#d62728", "ls": "--"},
     }
 
     # ── Loss curves ──
     offset = window // 2
-    for run in [mup_result, maxp_result]:
-        st = method_style[run.method]
+    for run in results:
+        st = method_style.get(run.method, {"color": "#333333", "ls": "-"})
         sm = smooth(run.losses, window)
         ax_loss.plot(run.losses, alpha=0.10, color=st["color"], linewidth=0.5)
         ax_loss.plot(
@@ -162,7 +164,7 @@ def plot_comparison(
             label=run.method,
         )
 
-    all_losses = mup_result.losses + maxp_result.losses
+    all_losses = sum((r.losses for r in results), [])
     finite = [v for v in all_losses if math.isfinite(v)]
     if finite:
         lo, hi = np.percentile(finite, 1), np.percentile(finite, 95)
@@ -193,7 +195,7 @@ def plot_comparison(
 
     # ── Per-layer alignment + LR for maxP ──
     if has_hist:
-        hist = maxp_result.layer_history
+        hist = hist_result.layer_history
         names = list(hist.keys())
         colors = _build_layer_colors(names)
 
@@ -238,7 +240,7 @@ def plot_comparison(
     # ── Summary table ──
     ax_table.axis("off")
     rows = []
-    for run in [mup_result, maxp_result]:
+    for run in results:
         tag = f"{run.final_loss:.4f}" if not run.diverged else "DIV"
         rows.append([run.method, f"{run.lr}", tag])
     table = ax_table.table(
@@ -296,47 +298,48 @@ def main():
         decay=args.decay, seed=args.seed,
     )
 
-    # Load muP
-    mup_key = _cache_key("muP", **cache_hparams)
-    mup_result = _load_result(_cache_path(cache_dir, "muP", mup_key))
+    # Load all results
+    loaded: list[tuple[str, RunResult | None]] = []
 
-    # Load maxP
+    # muP (no-align)
+    noalign_hparams = {**cache_hparams, "alignment": "no"}
+    noalign_key = _cache_key("muP (no-align)", **noalign_hparams)
+    loaded.append(("muP (no-align)", _load_result(_cache_path(cache_dir, "muP_no-align", noalign_key))))
+
+    # muP (full alignment)
+    mup_key = _cache_key("muP", **cache_hparams)
+    loaded.append(("muP", _load_result(_cache_path(cache_dir, "muP", mup_key))))
+
+    # maxP
     maxp_hparams = {**cache_hparams,
                     "alignment_warmup": args.alignment_warmup,
                     "solve_interval": args.solve_interval,
                     "sample_size": args.sample_size,
                     "c_ema": args.c_ema}
     maxp_key = _cache_key("maxP", **maxp_hparams)
-    maxp_result = _load_result(_cache_path(cache_dir, "maxP", maxp_key))
+    loaded.append(("maxP", _load_result(_cache_path(cache_dir, "maxP", maxp_key))))
 
-    if mup_result is None and maxp_result is None:
-        print(f"No cached results found in {cache_dir}")
-        print("Run compare_mup_maxp.py first, or check your args match.")
+    results = []
+    for name, result in loaded:
+        if result is None:
+            print(f"Warning: {name} result not cached, skipping")
+        else:
+            tag = "DIV" if result.diverged else f"{result.final_loss:.4f}"
+            print(f"{name}: loss={tag}")
+            results.append(result)
+
+    if len(results) < 2:
+        print("Need at least 2 cached results to plot. Run compare_mup_maxp.py first.")
         sys.exit(1)
 
-    if mup_result is None:
-        print("Warning: muP result not cached, skipping")
-    else:
-        tag = "DIV" if mup_result.diverged else f"{mup_result.final_loss:.4f}"
-        print(f"muP:  loss={tag}")
-
-    if maxp_result is None:
-        print("Warning: maxP result not cached, skipping")
-    else:
-        tag = "DIV" if maxp_result.diverged else f"{maxp_result.final_loss:.4f}"
-        print(f"maxP: loss={tag}")
-
-    if mup_result and maxp_result:
-        plot_comparison(
-            mup_result, maxp_result,
-            n_steps=args.steps,
-            warmup=args.warmup,
-            decay=args.decay,
-            filename=args.output,
-            window=args.window,
-        )
-    else:
-        print("Need both results to plot. Run compare_mup_maxp.py to completion first.")
+    plot_comparison(
+        *results,
+        n_steps=args.steps,
+        warmup=args.warmup,
+        decay=args.decay,
+        filename=args.output,
+        window=args.window,
+    )
 
 
 if __name__ == "__main__":
