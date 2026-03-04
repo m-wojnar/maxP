@@ -91,6 +91,11 @@ def schedule_factor(step: int, total: int, name: str) -> float:
             return 1.0
         t = (step - decay_start) / (total - decay_start)
         return 0.5 * (1 + math.cos(math.pi * t))
+    if name == "early-stop":
+        cutoff = int(0.4 * total)
+        if step >= cutoff:
+            return 0.0
+        return 0.5 * (1 + math.cos(math.pi * step / cutoff))
     raise ValueError(f"Unknown schedule: {name!r}")
 
 
