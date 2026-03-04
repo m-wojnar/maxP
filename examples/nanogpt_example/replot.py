@@ -60,58 +60,57 @@ def wsd_factor(step, total, warmup=500, decay=1000):
 
 # ── Layer type detection + color scheme ──────────────────────────────────
 
-# Layer type → base color (RGB)
-_TYPE_COLORS = {
-    "embedding": (0.12, 0.47, 0.71),   # blue
-    "hidden":    (0.17, 0.63, 0.17),   # green
-    "readout":   (0.84, 0.15, 0.16),   # red
+# Op type → base color (RGB)
+_OP_COLORS = {
+    "qkv":        (0.12, 0.47, 0.71),   # blue
+    "attn_score": (0.68, 0.78, 0.91),   # light blue
+    "proj":       (0.17, 0.63, 0.17),   # green
+    "fc1":        (1.00, 0.50, 0.05),   # orange
+    "fc2":        (0.84, 0.15, 0.16),   # red
+    "tok_emb":    (0.58, 0.40, 0.74),   # purple
+    "pos_emb":    (0.77, 0.69, 0.83),   # light purple
+    "head":       (0.55, 0.34, 0.29),   # brown
 }
 
-# Detect layer type from fully-qualified module name
-_TYPE_PATTERNS = [
-    ("embedding", {"tok_emb", "pos_emb"}),
-    ("readout",   {"head", "attn_score"}),
-    # everything else is hidden
-]
 
-
-def _detect_layer_type(name: str) -> str:
+def _detect_op_type(name: str) -> str:
+    """Extract op type from fully-qualified module name (e.g. 'blocks.3.attn.qkv' → 'qkv')."""
     leaf = name.split(".")[-1]
-    for ltype, keywords in _TYPE_PATTERNS:
-        if leaf in keywords:
-            return ltype
-    return "hidden"
+    if leaf in _OP_COLORS:
+        return leaf
+    return name  # fallback to full name
 
 
 def _build_layer_colors(names: list[str]) -> dict[str, tuple[float, float, float]]:
-    """Assign colors: hue by layer type, brightness by index within type."""
-    # Group by type
-    by_type: dict[str, list[str]] = {}
+    """Assign colors: hue by op type, brightness by block index."""
+    by_op: dict[str, list[str]] = {}
     for name in names:
-        lt = _detect_layer_type(name)
-        by_type.setdefault(lt, []).append(name)
+        op = _detect_op_type(name)
+        by_op.setdefault(op, []).append(name)
 
     colors = {}
-    for lt, layer_names in by_type.items():
-        base = _TYPE_COLORS.get(lt, (0.5, 0.5, 0.5))
+    for op, layer_names in by_op.items():
+        base = _OP_COLORS.get(op, (0.5, 0.5, 0.5))
         n = len(layer_names)
         for i, name in enumerate(layer_names):
             if n == 1:
                 factor = 1.0
             else:
-                # Range from 0.4 (dark) to 1.0 (bright)
+                # Range from 0.4 (dark/early block) to 1.0 (bright/late block)
                 factor = 0.4 + 0.6 * (i / (n - 1))
             colors[name] = tuple(c * factor for c in base)
     return colors
 
 
-def _type_legend_handles():
-    """Build legend handles for layer types (one entry per type)."""
+def _op_legend_handles(names: list[str]):
+    """Build legend handles — one entry per op type present in the data."""
     import matplotlib.patches as mpatches
-    handles = []
-    for lt, rgb in _TYPE_COLORS.items():
-        handles.append(mpatches.Patch(color=rgb, label=lt))
-    return handles
+    seen = {}
+    for name in names:
+        op = _detect_op_type(name)
+        if op not in seen:
+            seen[op] = _OP_COLORS.get(op, (0.5, 0.5, 0.5))
+    return [mpatches.Patch(color=rgb, label=op) for op, rgb in seen.items()]
 
 
 # ── Plotting ─────────────────────────────────────────────────────────────
@@ -221,8 +220,9 @@ def plot_comparison(
                 pad = 0.15 * max(hi - lo, 1e-8)
                 ax.set_ylim(lo - pad, hi + pad)
 
-        # Shared layer-type legend on LR panel
-        ax_lr.legend(handles=_type_legend_handles(), fontsize="x-small", loc="upper right")
+        # Shared op-type legend on LR panel
+        legend_handles = _op_legend_handles(names)
+        ax_lr.legend(handles=legend_handles, fontsize="x-small", loc="upper right")
 
     for ax, title, ylabel in [
         (ax_alpha, r"$\alpha$ (z₀ @ $\Delta$w)", r"$\alpha$"),
