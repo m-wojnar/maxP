@@ -202,7 +202,6 @@ def main():
             block_idx = _block_index(name)
             title = f"{op}" + (f" [block {block_idx}]" if block_idx is not None else "")
             ax.set_title(title, fontsize=8)
-            ax.set_yscale("log")
             ax.grid(True, alpha=0.2)
             ax.tick_params(labelsize=6)
 
