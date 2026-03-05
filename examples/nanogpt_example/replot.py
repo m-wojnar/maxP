@@ -227,6 +227,8 @@ def plot_comparison(
         legend_handles = _op_legend_handles(names)
         ax_lr.legend(handles=legend_handles, fontsize="x-small", loc="upper right")
 
+    ax_lr.set_yscale("log")
+
     for ax, title, ylabel in [
         (ax_alpha, r"$\alpha$ (z₀ @ $\Delta$w)", r"$\alpha$"),
         (ax_omega, r"$\omega$ ($\Delta$z @ w₀)", r"$\omega$"),
