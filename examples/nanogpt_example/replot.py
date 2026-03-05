@@ -146,6 +146,7 @@ def plot_comparison(
         "muP":                 {"color": "#1f77b4", "ls": "-"},
         "maxP":                {"color": "#d62728", "ls": "--"},
         "maxP (fc2-noalign)":  {"color": "#ff7f0e", "ls": "-."},
+        "maxP (spectral)":     {"color": "#2ca02c", "ls": "-."},
     }
 
     # ── Loss curves ──
