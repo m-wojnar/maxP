@@ -68,9 +68,9 @@ MAXP_DEFAULTS = dict(
 NO_ALIGN = (0.5, 0.5, 0.5)
 
 RUNS = [
-    ("maxP",           0.03, 40000, {}),
-    ("maxP",           0.03, 40000, {"alignment_overrides": {"fc2": NO_ALIGN}}, "maxP (fc2-noalign)"),
-    ("muP (no-align)", 0.01, 40000, {}),
+    ("maxP",           0.03, 5000, {}),
+    ("maxP",           0.03, 5000, {"alignment_overrides": {"fc2": NO_ALIGN}}, "maxP (fc2-noalign)"),
+    ("muP (no-align)", 0.01, 5000, {}),
     # ("muP",          0.01, 5000, {}),
 ]
 
