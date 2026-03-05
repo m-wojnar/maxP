@@ -48,7 +48,7 @@ MODEL = dict(d_model=768, n_heads=12, n_layers=12, d_ff=3072, seq_len=1024)  # g
 BATCH_SIZE = 8
 SEED = 42
 WARMUP = 500
-DECAY = 1000
+DECAY = None  # set to 10% of each run's steps (computed per run)
 
 # maxP-specific defaults
 MAXP_DEFAULTS = dict(
@@ -112,19 +112,20 @@ def main():
     results: list[RunResult] = []
 
     for i, (method, lr, steps, extra) in enumerate(RUNS):
-        print(f"\n[{i+1}/{len(RUNS)}] {method}  lr={lr}  steps={steps}")
+        decay = DECAY if DECAY is not None else steps // 10
+        print(f"\n[{i+1}/{len(RUNS)}] {method}  lr={lr}  steps={steps}  decay={decay}")
 
         cache_hp = dict(
             dataset=DATASET, **MODEL,
             steps=steps, batch_size=BATCH_SIZE,
-            lr=lr, warmup=WARMUP, decay=DECAY, seed=SEED,
+            lr=lr, warmup=WARMUP, decay=decay, seed=SEED,
         )
 
         train_kwargs = dict(
             **MODEL, data=data, vocab_size=vocab_size,
             lr=lr, n_steps=steps,
             batch_size=BATCH_SIZE, seed=SEED,
-            warmup=WARMUP, decay=DECAY, device=device,
+            warmup=WARMUP, decay=decay, device=device,
         )
 
         if method == "maxP":
@@ -165,13 +166,14 @@ def main():
     all_runs = by_method
 
     if len(best_results) >= 2:
-        # Find max steps for WSD overlay
+        # Find max steps for WSD overlay; use decay from longest run
         max_steps = max(len(r.losses) for r in best_results)
+        plot_decay = DECAY if DECAY is not None else max_steps // 10
         plot_comparison(
             *best_results,
             n_steps=max_steps,
             warmup=WARMUP,
-            decay=DECAY,
+            decay=plot_decay,
             filename=OUTPUT,
             all_runs=all_runs,
         )
