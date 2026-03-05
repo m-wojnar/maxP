@@ -34,6 +34,7 @@ from examples.nanogpt_example.sweep import (
     get_device,
     load_openwebtext,
     load_shakespeare,
+    pick_best,
 )
 from examples.nanogpt_example.replot import plot_comparison
 from maxp import Parametrization
@@ -318,7 +319,8 @@ def main():
     parser.add_argument("--seq-len", type=int, default=None)
     parser.add_argument("--steps", type=int, default=10000)
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--lr", type=float, default=0.1)
+    parser.add_argument("--lrs", type=float, nargs="+", default=[0.1],
+                        help="Learning rate(s) to sweep; best is picked per method")
     parser.add_argument("--warmup", type=int, default=500,
                         help="WSD warmup steps")
     parser.add_argument("--decay", type=int, default=1000,
@@ -345,12 +347,14 @@ def main():
     seq_len = args.seq_len or defaults["seq_len"]
     d_ff = args.d_ff or defaults["d_ff"] or 4 * d_model
 
+    lrs = sorted(args.lrs)
+
     device = get_device()
     print(f"Device: {device}")
     print(f"Dataset: {args.dataset}" + (f" (preset: {args.preset})" if args.preset != "none" else ""))
     print(f"d_model={d_model}, n_heads={n_heads}, "
           f"n_layers={n_layers}, d_ff={d_ff}, seq_len={seq_len}")
-    print(f"LR={args.lr}, steps={args.steps}, batch_size={args.batch_size}")
+    print(f"LRs={lrs}, steps={args.steps}, batch_size={args.batch_size}")
     print(f"WSD: warmup={args.warmup}, decay={args.decay}")
     print(f"maxP: alignment_warmup={args.alignment_warmup}, "
           f"solve_interval={args.solve_interval}, sample_size={args.sample_size}, "
@@ -359,11 +363,11 @@ def main():
 
     # Cache setup — keyed on all hyperparams + dataset so changing config invalidates
     cache_dir = Path(args.output).parent / ".result_cache"
-    cache_hparams = dict(
+    cache_hparams_base = dict(
         dataset=args.dataset,
         d_model=d_model, n_heads=n_heads, n_layers=n_layers,
         d_ff=d_ff, seq_len=seq_len, steps=args.steps,
-        batch_size=args.batch_size, lr=args.lr, warmup=args.warmup,
+        batch_size=args.batch_size, warmup=args.warmup,
         decay=args.decay, seed=args.seed,
     )
 
@@ -378,75 +382,88 @@ def main():
         data, vocab_size, chars = load_shakespeare(device)
         print(f"  {len(data):,} chars, vocab size: {vocab_size}")
 
-    common = dict(
+    common_base = dict(
         d_model=d_model, n_heads=n_heads, n_layers=n_layers,
         d_ff=d_ff, data=data, vocab_size=vocab_size,
-        lr=args.lr, n_steps=args.steps, seq_len=seq_len,
+        n_steps=args.steps, seq_len=seq_len,
         batch_size=args.batch_size, seed=args.seed,
         warmup=args.warmup, decay=args.decay,
         device=device,
     )
 
+    def _run_or_load(method_label, cache_label, file_prefix, train_fn, extra_cache_hparams=None, extra_train_kwargs=None):
+        """Run all LRs for a method, return list of RunResults."""
+        runs = []
+        for i, lr in enumerate(lrs):
+            cache_hp = {**cache_hparams_base, "lr": lr}
+            if extra_cache_hparams:
+                cache_hp.update(extra_cache_hparams)
+            key = _cache_key(cache_label, **cache_hp)
+            path = _cache_path(cache_dir, file_prefix, key)
+            result = _load_result(path)
+            lr_tag = f"lr={lr}"
+            if result is not None:
+                print(f"  [{i+1}/{len(lrs)}] {method_label} {lr_tag} — loaded from cache")
+            else:
+                print(f"  [{i+1}/{len(lrs)}] {method_label} {lr_tag} — training...")
+                kwargs = {**common_base, "lr": lr}
+                if extra_train_kwargs:
+                    kwargs.update(extra_train_kwargs)
+                result = train_fn(**kwargs)
+                _save_result(path, result)
+            tag = "DIV" if result.diverged else f"{result.final_loss:.4f}"
+            print(f"        → final_loss={tag}")
+            runs.append(result)
+        return runs
+
     # ── maxP (run first — slowest, want to cache early) ──
-    maxp_hparams = {**cache_hparams,
-                    "alignment_warmup": args.alignment_warmup,
-                    "solve_interval": args.solve_interval,
-                    "sample_size": args.sample_size,
-                    "c_ema": args.c_ema}
-    maxp_key = _cache_key("maxP", **maxp_hparams)
-    maxp_cache = _cache_path(cache_dir, "maxP", maxp_key)
-    maxp_result = _load_result(maxp_cache)
-    if maxp_result is not None:
-        print("\n[1/3] maxP + WSD — loaded from cache")
-    else:
-        print("\n[1/3] Training maxP + WSD...")
-        maxp_result = train_maxp(
-            **common,
-            alignment_warmup=args.alignment_warmup,
-            solve_interval=args.solve_interval,
-            sample_size=args.sample_size,
-            c_ema=args.c_ema,
-        )
-        _save_result(maxp_cache, maxp_result)
-    maxp_tag = "DIV" if maxp_result.diverged else f"{maxp_result.final_loss:.4f}"
-    print(f"  → maxP final_loss={maxp_tag}")
+    maxp_extra_cache = {
+        "alignment_warmup": args.alignment_warmup,
+        "solve_interval": args.solve_interval,
+        "sample_size": args.sample_size,
+        "c_ema": args.c_ema,
+    }
+    maxp_extra_train = {
+        "alignment_warmup": args.alignment_warmup,
+        "solve_interval": args.solve_interval,
+        "sample_size": args.sample_size,
+        "c_ema": args.c_ema,
+    }
+    print("\n[1/3] maxP + WSD")
+    maxp_runs = _run_or_load("maxP", "maxP", "maxP", train_maxp,
+                             extra_cache_hparams=maxp_extra_cache,
+                             extra_train_kwargs=maxp_extra_train)
+    maxp_best = pick_best(maxp_runs)
 
     # ── muP (full alignment) ──
-    mup_key = _cache_key("muP", **cache_hparams)
-    mup_cache = _cache_path(cache_dir, "muP", mup_key)
-    mup_result = _load_result(mup_cache)
-    if mup_result is not None:
-        print("\n[2/3] muP (full) + WSD — loaded from cache")
-    else:
-        print("\n[2/3] Training muP (full) + WSD...")
-        mup_result = train_mup(**common)
-        _save_result(mup_cache, mup_result)
-    mup_tag = "DIV" if mup_result.diverged else f"{mup_result.final_loss:.4f}"
-    print(f"  → muP final_loss={mup_tag}")
+    print("\n[2/3] muP (full) + WSD")
+    mup_runs = _run_or_load("muP", "muP", "muP", train_mup)
+    mup_best = pick_best(mup_runs)
 
     # ── muP (no alignment) ──
-    noalign_hparams = {**cache_hparams, "alignment": "no"}
-    noalign_key = _cache_key("muP (no-align)", **noalign_hparams)
-    noalign_cache = _cache_path(cache_dir, "muP_no-align", noalign_key)
-    noalign_result = _load_result(noalign_cache)
-    if noalign_result is not None:
-        print("\n[3/3] muP (no-align) + WSD — loaded from cache")
-    else:
-        print("\n[3/3] Training muP (no-align) + WSD...")
-        noalign_result = train_mup_noalign(**common)
-        _save_result(noalign_cache, noalign_result)
-    noalign_tag = "DIV" if noalign_result.diverged else f"{noalign_result.final_loss:.4f}"
-    print(f"  → muP (no-align) final_loss={noalign_tag}")
+    print("\n[3/3] muP (no-align) + WSD")
+    noalign_runs = _run_or_load("muP (no-align)", "muP (no-align)", "muP_no-align",
+                                train_mup_noalign,
+                                extra_cache_hparams={"alignment": "no"})
+    noalign_best = pick_best(noalign_runs)
 
-    print(f"\n{'='*50}")
-    print(f"  muP (no-align) loss={noalign_tag}")
-    print(f"  muP (full)     loss={mup_tag}")
-    print(f"  maxP           loss={maxp_tag}")
-    print(f"{'='*50}")
+    # ── Summary ──
+    print(f"\n{'='*60}")
+    for label, runs, best in [
+        ("muP (no-align)", noalign_runs, noalign_best),
+        ("muP (full)",     mup_runs,     mup_best),
+        ("maxP",           maxp_runs,    maxp_best),
+    ]:
+        print(f"  {label}:")
+        for r in runs:
+            tag = "DIV" if r.diverged else f"{r.final_loss:.4f}"
+            marker = "  <-- best" if r is best else ""
+            print(f"    lr={r.lr}  loss={tag}{marker}")
+    print(f"{'='*60}")
 
     if not args.no_plot:
         plot_comparison(
-            noalign_result, mup_result, maxp_result,
+            noalign_best, mup_best, maxp_best,
             n_steps=args.steps,
             warmup=args.warmup,
             decay=args.decay,

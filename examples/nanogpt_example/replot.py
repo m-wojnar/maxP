@@ -19,7 +19,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from examples.nanogpt_example.sweep import RunResult, _short_name, smooth
+from examples.nanogpt_example.sweep import RunResult, _short_name, pick_best, smooth
 
 
 # ── Cache loading (duplicated keys from compare_mup_maxp.py) ─────────────
@@ -276,7 +276,8 @@ def main():
     parser.add_argument("--seq-len", type=int, default=64)
     parser.add_argument("--steps", type=int, default=10000)
     parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--lr", type=float, default=0.1)
+    parser.add_argument("--lrs", type=float, nargs="+", default=[0.1],
+                        help="Learning rate(s) to sweep; best is picked per method")
     parser.add_argument("--warmup", type=int, default=500)
     parser.add_argument("--decay", type=int, default=1000)
     parser.add_argument("--alignment-warmup", type=int, default=10)
@@ -292,52 +293,62 @@ def main():
     args = parser.parse_args()
 
     d_ff = args.d_ff or 4 * args.d_model
+    lrs = sorted(args.lrs)
     cache_dir = Path(args.cache_dir) if args.cache_dir else Path(args.output).parent / ".result_cache"
 
-    cache_hparams = dict(
+    cache_hparams_base = dict(
         dataset=args.dataset,
         d_model=args.d_model, n_heads=args.n_heads, n_layers=args.n_layers,
         d_ff=d_ff, seq_len=args.seq_len, steps=args.steps,
-        batch_size=args.batch_size, lr=args.lr, warmup=args.warmup,
+        batch_size=args.batch_size, warmup=args.warmup,
         decay=args.decay, seed=args.seed,
     )
 
-    # Load all results
-    loaded: list[tuple[str, RunResult | None]] = []
+    def _load_runs(method_label, cache_label, file_prefix, extra_cache_hparams=None):
+        """Load cached results for all LRs, return list of RunResults found."""
+        runs = []
+        for lr in lrs:
+            cache_hp = {**cache_hparams_base, "lr": lr}
+            if extra_cache_hparams:
+                cache_hp.update(extra_cache_hparams)
+            key = _cache_key(cache_label, **cache_hp)
+            result = _load_result(_cache_path(cache_dir, file_prefix, key))
+            if result is None:
+                print(f"Warning: {method_label} lr={lr} not cached, skipping")
+            else:
+                tag = "DIV" if result.diverged else f"{result.final_loss:.4f}"
+                print(f"  {method_label} lr={lr}: loss={tag}")
+                runs.append(result)
+        return runs
 
-    # muP (no-align)
-    noalign_hparams = {**cache_hparams, "alignment": "no"}
-    noalign_key = _cache_key("muP (no-align)", **noalign_hparams)
-    loaded.append(("muP (no-align)", _load_result(_cache_path(cache_dir, "muP_no-align", noalign_key))))
+    # Load all methods across all LRs
+    best_results = []
 
-    # muP (full alignment)
-    mup_key = _cache_key("muP", **cache_hparams)
-    loaded.append(("muP", _load_result(_cache_path(cache_dir, "muP", mup_key))))
+    maxp_extra = {
+        "alignment_warmup": args.alignment_warmup,
+        "solve_interval": args.solve_interval,
+        "sample_size": args.sample_size,
+        "c_ema": args.c_ema,
+    }
 
-    # maxP
-    maxp_hparams = {**cache_hparams,
-                    "alignment_warmup": args.alignment_warmup,
-                    "solve_interval": args.solve_interval,
-                    "sample_size": args.sample_size,
-                    "c_ema": args.c_ema}
-    maxp_key = _cache_key("maxP", **maxp_hparams)
-    loaded.append(("maxP", _load_result(_cache_path(cache_dir, "maxP", maxp_key))))
+    for method_label, cache_label, file_prefix, extra in [
+        ("muP (no-align)", "muP (no-align)", "muP_no-align", {"alignment": "no"}),
+        ("muP",            "muP",            "muP",          None),
+        ("maxP",           "maxP",           "maxP",         maxp_extra),
+    ]:
+        runs = _load_runs(method_label, cache_label, file_prefix, extra)
+        if runs:
+            best = pick_best(runs)
+            tag = "DIV" if best.diverged else f"{best.final_loss:.4f}"
+            print(f"  → best {method_label}: lr={best.lr} loss={tag}")
+            best_results.append(best)
 
-    results = []
-    for name, result in loaded:
-        if result is None:
-            print(f"Warning: {name} result not cached, skipping")
-        else:
-            tag = "DIV" if result.diverged else f"{result.final_loss:.4f}"
-            print(f"{name}: loss={tag}")
-            results.append(result)
-
-    if len(results) < 2:
+    if len(best_results) < 2:
         print("Need at least 2 cached results to plot. Run compare_mup_maxp.py first.")
         sys.exit(1)
 
     plot_comparison(
-        *results,
+        *best_results,
         n_steps=args.steps,
         warmup=args.warmup,
         decay=args.decay,
