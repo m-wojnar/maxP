@@ -462,12 +462,18 @@ def main():
     print(f"{'='*60}")
 
     if not args.no_plot:
+        all_runs = {
+            "muP (no-align)": noalign_runs,
+            "muP": mup_runs,
+            "maxP": maxp_runs,
+        }
         plot_comparison(
             noalign_best, mup_best, maxp_best,
             n_steps=args.steps,
             warmup=args.warmup,
             decay=args.decay,
             filename=args.output,
+            all_runs=all_runs,
         )
 
 

@@ -122,6 +122,7 @@ def plot_comparison(
     decay: int,
     filename: str = "compare_mup_maxp.png",
     window: int = 50,
+    all_runs: dict[str, list[RunResult]] | None = None,
 ):
     import matplotlib.pyplot as plt
 
@@ -240,19 +241,29 @@ def plot_comparison(
     # ── Summary table ──
     ax_table.axis("off")
     rows = []
-    for run in results:
-        tag = f"{run.final_loss:.4f}" if not run.diverged else "DIV"
-        rows.append([run.method, f"{run.lr}", tag])
+    best_set = set(id(r) for r in results)
+    if all_runs:
+        for method in ["muP (no-align)", "muP", "maxP"]:
+            for run in all_runs.get(method, []):
+                tag = f"{run.final_loss:.4f}" if not run.diverged else "DIV"
+                rows.append([run.method, f"{run.lr}", tag,
+                             "*" if id(run) in best_set else ""])
+        col_labels = ["Method", "LR", "Final Loss", "Best"]
+    else:
+        for run in results:
+            tag = f"{run.final_loss:.4f}" if not run.diverged else "DIV"
+            rows.append([run.method, f"{run.lr}", tag])
+        col_labels = ["Method", "LR", "Final Loss"]
     table = ax_table.table(
         cellText=rows,
-        colLabels=["Method", "LR", "Final Loss"],
+        colLabels=col_labels,
         loc="center",
         cellLoc="center",
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(9)
-    table.scale(1, 1.4)
-    ax_table.set_title("Results", fontsize=10)
+    table.set_fontsize(8)
+    table.scale(1, 1.2)
+    ax_table.set_title("All runs" if all_runs else "Results", fontsize=10)
 
     fig.suptitle("muP vs maxP (WSD schedule) — Shakespeare GPT", fontsize=14)
     fig.savefig(filename, dpi=150, bbox_inches="tight")
@@ -323,6 +334,7 @@ def main():
 
     # Load all methods across all LRs
     best_results = []
+    all_runs: dict[str, list[RunResult]] = {}
 
     maxp_extra = {
         "alignment_warmup": args.alignment_warmup,
@@ -338,6 +350,7 @@ def main():
     ]:
         runs = _load_runs(method_label, cache_label, file_prefix, extra)
         if runs:
+            all_runs[method_label] = runs
             best = pick_best(runs)
             tag = "DIV" if best.diverged else f"{best.final_loss:.4f}"
             print(f"  → best {method_label}: lr={best.lr} loss={tag}")
@@ -354,6 +367,7 @@ def main():
         decay=args.decay,
         filename=args.output,
         window=args.window,
+        all_runs=all_runs,
     )
 
 
