@@ -80,6 +80,10 @@ class Parametrization:
             override the built-in defaults.
         c_overrides: Optional dict mapping layer_type → ``c`` to override
             the LP-solved value.  Per-PM ``c`` takes priority over this.
+        alignment_overrides: Optional dict mapping layer name or layer_type →
+            ``(alpha, omega, u)`` to pin alignment for specific layers.
+            Pinned layers skip dynamic measurement in :meth:`step`.
+            Per-name entries take priority over per-type entries.
         sample_input: Optional example input for DAG tracing.  When provided,
             the solver assigns per-PM c values based on the actual data flow
             graph instead of collapsing by layer type.
@@ -102,6 +106,7 @@ class Parametrization:
         std_prefactor: float = 1.0,
         ab_overrides: dict[str, tuple[float, float]] | None = None,
         c_overrides: dict[str, float] | None = None,
+        alignment_overrides: dict[str, tuple[float, float, float]] | None = None,
         sample_input: torch.Tensor | None = None,
         # Phase 2 params
         warmup_steps: int = 0,
@@ -142,6 +147,16 @@ class Parametrization:
             graph = self._trace_graph(model, sample_input, ab, alignment)
         else:
             graph = self._build_chain_graph(pms, ab, alignment)
+
+        # Apply alignment overrides to graph nodes
+        if alignment_overrides:
+            for name, pm in pms:
+                if name not in graph.nodes:
+                    continue
+                override = alignment_overrides.get(name) or alignment_overrides.get(pm.layer_type)
+                if override is not None:
+                    node = graph.nodes[name]
+                    node.alpha, node.omega, node.u = override
 
         # Collect user-provided c values (per-PM overrides take priority)
         c_fixed: dict[str, float] = {}
@@ -228,12 +243,24 @@ class Parametrization:
             for group in groups if group.get("maxp_managed", False)
         }
 
-        # Set initial alignment on each PM from the preset
+        # Set initial alignment on each PM from the preset, with overrides
         alpha_val, omega_val, u_val = _ALIGNMENT_PRESETS[alignment]
-        for _name, pm in pms:
-            pm.alpha = alpha_val
-            pm.omega = omega_val
-            pm.u = u_val
+        self._alignment_pinned: set[str] = set()
+        for name, pm in pms:
+            # Check overrides: per-name first, then per-layer_type
+            override = None
+            if alignment_overrides:
+                if name in alignment_overrides:
+                    override = alignment_overrides[name]
+                elif pm.layer_type in alignment_overrides:
+                    override = alignment_overrides[pm.layer_type]
+            if override is not None:
+                pm.alpha, pm.omega, pm.u = override
+                self._alignment_pinned.add(name)
+            else:
+                pm.alpha = alpha_val
+                pm.omega = omega_val
+                pm.u = u_val
 
     @property
     def param_groups(self) -> list[dict]:
@@ -347,6 +374,8 @@ class Parametrization:
         from maxp.alignment import compute_alignment
 
         for name, pm in self._pms:
+            if name in self._alignment_pinned:
+                continue
             if pm._z0 is None or name not in current:
                 continue
             z0, w0 = pm._z0, pm._w0
