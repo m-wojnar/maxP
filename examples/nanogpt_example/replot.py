@@ -142,9 +142,10 @@ def plot_comparison(
     ax_table = fig.add_subplot(gs[1, 3])
 
     method_style = {
-        "muP (no-align)": {"color": "#7f7f7f", "ls": "-"},
-        "muP":            {"color": "#1f77b4", "ls": "-"},
-        "maxP":           {"color": "#d62728", "ls": "--"},
+        "muP (no-align)":      {"color": "#7f7f7f", "ls": "-"},
+        "muP":                 {"color": "#1f77b4", "ls": "-"},
+        "maxP":                {"color": "#d62728", "ls": "--"},
+        "maxP (fc2-noalign)":  {"color": "#ff7f0e", "ls": "-."},
     }
 
     # ── Loss curves ──
@@ -245,8 +246,8 @@ def plot_comparison(
     rows = []
     best_set = set(id(r) for r in results)
     if all_runs:
-        for method in ["muP (no-align)", "muP", "maxP"]:
-            for run in all_runs.get(method, []):
+        for method in all_runs:
+            for run in all_runs[method]:
                 tag = f"{run.final_loss:.4f}" if not run.diverged else "DIV"
                 rows.append([run.method, f"{run.lr}", tag,
                              "*" if id(run) in best_set else ""])

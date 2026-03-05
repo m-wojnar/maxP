@@ -60,11 +60,16 @@ MAXP_DEFAULTS = dict(
 
 # ── Define your runs ──────────────────────────────────────────────────────
 # Each entry: (method, lr, steps, extra_kwargs)
+#   or:       (method, lr, steps, extra_kwargs, display_name)
 # method: "maxP", "muP", "muP (no-align)"
 # extra_kwargs: only needed for maxP (overrides MAXP_DEFAULTS)
+# display_name: optional label for plots/summary (defaults to method)
+
+NO_ALIGN = (0.5, 0.5, 0.5)
 
 RUNS = [
     ("maxP",           0.03, 40000, {}),
+    ("maxP",           0.03, 40000, {"alignment_overrides": {"fc2": NO_ALIGN}}, "maxP (fc2-noalign)"),
     ("muP (no-align)", 0.01, 40000, {}),
     # ("muP",          0.01, 5000, {}),
 ]
@@ -111,9 +116,11 @@ def main():
     # Run experiments
     results: list[RunResult] = []
 
-    for i, (method, lr, steps, extra) in enumerate(RUNS):
+    for i, run_spec in enumerate(RUNS):
+        method, lr, steps, extra = run_spec[:4]
+        display_name = run_spec[4] if len(run_spec) > 4 else method
         decay = DECAY if DECAY is not None else steps // 10
-        print(f"\n[{i+1}/{len(RUNS)}] {method}  lr={lr}  steps={steps}  decay={decay}")
+        print(f"\n[{i+1}/{len(RUNS)}] {display_name}  lr={lr}  steps={steps}  decay={decay}")
 
         cache_hp = dict(
             dataset=DATASET, **MODEL,
@@ -130,13 +137,23 @@ def main():
 
         if method == "maxP":
             maxp_cfg = {**MAXP_DEFAULTS, **extra}
+            # alignment_overrides needs special handling (not JSON-serializable as-is)
+            align_ov = maxp_cfg.pop("alignment_overrides", None)
             cache_hp.update(maxp_cfg)
+            if align_ov:
+                cache_hp["alignment_overrides"] = {k: list(v) for k, v in align_ov.items()}
             train_kwargs.update(maxp_cfg)
+            if align_ov:
+                train_kwargs["alignment_overrides"] = align_ov
+            train_kwargs["method_name"] = display_name
         elif method == "muP (no-align)":
             cache_hp["alignment"] = "no"
 
-        key = _cache_key(method, **cache_hp)
-        path = _cache_path(cache_dir, FILE_PREFIX[method], key)
+        file_prefix = FILE_PREFIX[method]
+        if display_name != method:
+            file_prefix = display_name.replace(" ", "_").replace("(", "").replace(")", "")
+        key = _cache_key(display_name, **cache_hp)
+        path = _cache_path(cache_dir, file_prefix, key)
         result = _load_result(path)
 
         if result is not None:

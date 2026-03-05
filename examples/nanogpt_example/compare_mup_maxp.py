@@ -225,6 +225,7 @@ def train_maxp(
     d_model, n_heads, n_layers, d_ff, data, vocab_size, *,
     lr, n_steps, seq_len, batch_size, seed,
     warmup, decay, alignment_warmup, solve_interval, sample_size, c_ema,
+    alignment_overrides=None, method_name="maxP",
     device=None,
 ) -> RunResult:
     """maxP with WSD schedule (dynamic alignment)."""
@@ -237,6 +238,7 @@ def train_maxp(
         lr_prefactor=lr,
         optimizer_type="adam",
         alignment="full",
+        alignment_overrides=alignment_overrides,
         warmup_steps=alignment_warmup,
         solve_interval=solve_interval,
         sample_size=sample_size,
@@ -292,7 +294,7 @@ def train_maxp(
 
     pbar.close()
     return RunResult(
-        method="maxP", lr=lr,
+        method=method_name, lr=lr,
         losses=losses, layer_history=layer_history,
     )
 
