@@ -64,10 +64,9 @@ MAXP_DEFAULTS = dict(
 # extra_kwargs: only needed for maxP (overrides MAXP_DEFAULTS)
 
 RUNS = [
-    ("maxP",           0.03, 5000, {}),
-    ("muP (no-align)", 0.01, 5000, {}),
+    ("maxP",           0.03, 40000, {}),
+    ("muP (no-align)", 0.01, 40000, {}),
     # ("muP",          0.01, 5000, {}),
-    # ("maxP",         0.01, 20000, {"solve_interval": 50}),
 ]
 
 OUTPUT = "experiment.png"
