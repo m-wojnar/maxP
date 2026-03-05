@@ -80,10 +80,11 @@ class Parametrization:
             override the built-in defaults.
         c_overrides: Optional dict mapping layer_type → ``c`` to override
             the LP-solved value.  Per-PM ``c`` takes priority over this.
-        alignment_overrides: Optional dict mapping layer name or layer_type →
-            ``(alpha, omega, u)`` to pin alignment for specific layers.
-            Pinned layers skip dynamic measurement in :meth:`step`.
-            Per-name entries take priority over per-type entries.
+        alignment_overrides: Optional dict mapping layer name, name suffix,
+            or layer_type → ``(alpha, omega, u)`` to pin alignment for
+            specific layers.  Pinned layers skip dynamic measurement in
+            :meth:`step`.  Matching priority: exact name > leaf name
+            (e.g. ``"fc2"`` matches ``"blocks.0.ff.fc2"``) > layer_type.
         sample_input: Optional example input for DAG tracing.  When provided,
             the solver assigns per-PM c values based on the actual data flow
             graph instead of collapsing by layer type.
@@ -153,7 +154,12 @@ class Parametrization:
             for name, pm in pms:
                 if name not in graph.nodes:
                     continue
-                override = alignment_overrides.get(name) or alignment_overrides.get(pm.layer_type)
+                override = alignment_overrides.get(name)
+                if override is None:
+                    leaf = name.split(".")[-1]
+                    override = alignment_overrides.get(leaf)
+                if override is None:
+                    override = alignment_overrides.get(pm.layer_type)
                 if override is not None:
                     node = graph.nodes[name]
                     node.alpha, node.omega, node.u = override
@@ -247,13 +253,17 @@ class Parametrization:
         alpha_val, omega_val, u_val = _ALIGNMENT_PRESETS[alignment]
         self._alignment_pinned: set[str] = set()
         for name, pm in pms:
-            # Check overrides: per-name first, then per-layer_type
+            # Check overrides: exact name > name suffix > layer_type
             override = None
             if alignment_overrides:
                 if name in alignment_overrides:
                     override = alignment_overrides[name]
-                elif pm.layer_type in alignment_overrides:
-                    override = alignment_overrides[pm.layer_type]
+                else:
+                    leaf = name.split(".")[-1]
+                    if leaf in alignment_overrides:
+                        override = alignment_overrides[leaf]
+                    elif pm.layer_type in alignment_overrides:
+                        override = alignment_overrides[pm.layer_type]
             if override is not None:
                 pm.alpha, pm.omega, pm.u = override
                 self._alignment_pinned.add(name)
