@@ -215,7 +215,7 @@ def plot_comparison(
         ]:
             ax.axhline(ref, color="k", ls=":", lw=0.8, alpha=0.5)
 
-        for ax, key in [(ax_alpha, "alpha"), (ax_omega, "omega"), (ax_u, "u"), (ax_lr, "lr")]:
+        for ax, key in [(ax_alpha, "alpha"), (ax_omega, "omega"), (ax_u, "u")]:
             all_vals = []
             for history in hist.values():
                 all_vals.extend(h[key] for h in history if math.isfinite(h[key]))
@@ -223,6 +223,9 @@ def plot_comparison(
                 lo, hi = np.percentile(all_vals, 1), np.percentile(all_vals, 99)
                 pad = 0.15 * max(hi - lo, 1e-8)
                 ax.set_ylim(lo - pad, hi + pad)
+
+        # LR axis: log scale, let matplotlib auto-range
+        ax_lr.set_yscale("log")
 
         # Shared op-type legend on LR panel
         legend_handles = _op_legend_handles(names)
