@@ -123,11 +123,15 @@ def plot_comparison(
     filename: str = "compare_mup_maxp.png",
     window: int = 50,
     all_runs: dict[str, list[RunResult]] | None = None,
+    hist_method: str | None = None,
 ):
     import matplotlib.pyplot as plt
 
-    # Find the first result with layer history (maxP)
-    hist_result = next((r for r in results if r.layer_history), None)
+    # Find result with layer history to plot alignment panels
+    if hist_method:
+        hist_result = next((r for r in results if r.method == hist_method and r.layer_history), None)
+    else:
+        hist_result = next((r for r in results if r.layer_history), None)
     has_hist = hist_result is not None
 
     fig = plt.figure(figsize=(18, 10))

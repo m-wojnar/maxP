@@ -77,6 +77,7 @@ RUNS = [
 ]
 
 OUTPUT = "experiment.png"
+HIST_METHOD = "maxP (spectral)"  # which method's alignment to plot (None = first with history)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # END CONFIG
@@ -195,6 +196,7 @@ def main():
             decay=plot_decay,
             filename=OUTPUT,
             all_runs=all_runs,
+            hist_method=HIST_METHOD,
         )
     else:
         print("Need at least 2 methods to plot comparison.")
