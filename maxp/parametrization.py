@@ -80,6 +80,11 @@ class Parametrization:
             override the built-in defaults.
         c_overrides: Optional dict mapping layer_type → ``c`` to override
             the LP-solved value.  Per-PM ``c`` takes priority over this.
+        alignment_overrides: Optional dict mapping layer name, name suffix,
+            or layer_type → ``(alpha, omega, u)`` to pin alignment for
+            specific layers.  Pinned layers skip dynamic measurement in
+            :meth:`step`.  Matching priority: exact name > leaf name
+            (e.g. ``"fc2"`` matches ``"blocks.0.ff.fc2"``) > layer_type.
         sample_input: Optional example input for DAG tracing.  When provided,
             the solver assigns per-PM c values based on the actual data flow
             graph instead of collapsing by layer type.
@@ -87,6 +92,9 @@ class Parametrization:
         solve_interval: Re-solve every N steps (default 1).
         sample_size: Max batch samples kept for alignment measurement (default 32).
         norm_mode: ``"rms"`` or ``"spectral"`` for alignment computation.
+        c_ema: EMA factor for smoothing ``c`` values toward solver targets.
+            Each step: ``c = c_ema * c + (1 - c_ema) * c_target``.
+            0.0 means instant updates (default), 0.99 means very slow blending.
     """
 
     def __init__(
@@ -99,12 +107,14 @@ class Parametrization:
         std_prefactor: float = 1.0,
         ab_overrides: dict[str, tuple[float, float]] | None = None,
         c_overrides: dict[str, float] | None = None,
+        alignment_overrides: dict[str, tuple[float, float, float]] | None = None,
         sample_input: torch.Tensor | None = None,
         # Phase 2 params
         warmup_steps: int = 0,
         solve_interval: int = 1,
         sample_size: int = 32,
         norm_mode: str = "rms",
+        c_ema: float = 0.0,
     ):
         self.model = model
         self.lr_prefactor = lr_prefactor
@@ -138,6 +148,21 @@ class Parametrization:
             graph = self._trace_graph(model, sample_input, ab, alignment)
         else:
             graph = self._build_chain_graph(pms, ab, alignment)
+
+        # Apply alignment overrides to graph nodes
+        if alignment_overrides:
+            for name, pm in pms:
+                if name not in graph.nodes:
+                    continue
+                override = alignment_overrides.get(name)
+                if override is None:
+                    leaf = name.split(".")[-1]
+                    override = alignment_overrides.get(leaf)
+                if override is None:
+                    override = alignment_overrides.get(pm.layer_type)
+                if override is not None:
+                    node = graph.nodes[name]
+                    node.alpha, node.omega, node.u = override
 
         # Collect user-provided c values (per-PM overrides take priority)
         c_fixed: dict[str, float] = {}
@@ -214,15 +239,38 @@ class Parametrization:
         self._solve_interval = solve_interval
         self._sample_size = sample_size
         self._norm_mode = norm_mode
+        self._c_ema = c_ema
         self._step_count = 0
         self._graph = graph
 
-        # Set initial alignment on each PM from the preset
+        # c_target tracks the latest solver output; c blends toward it each step
+        self._c_target: dict[str, float] = {
+            group["layer_name"]: group["c"]
+            for group in groups if group.get("maxp_managed", False)
+        }
+
+        # Set initial alignment on each PM from the preset, with overrides
         alpha_val, omega_val, u_val = _ALIGNMENT_PRESETS[alignment]
-        for _name, pm in pms:
-            pm.alpha = alpha_val
-            pm.omega = omega_val
-            pm.u = u_val
+        self._alignment_pinned: set[str] = set()
+        for name, pm in pms:
+            # Check overrides: exact name > name suffix > layer_type
+            override = None
+            if alignment_overrides:
+                if name in alignment_overrides:
+                    override = alignment_overrides[name]
+                else:
+                    leaf = name.split(".")[-1]
+                    if leaf in alignment_overrides:
+                        override = alignment_overrides[leaf]
+                    elif pm.layer_type in alignment_overrides:
+                        override = alignment_overrides[pm.layer_type]
+            if override is not None:
+                pm.alpha, pm.omega, pm.u = override
+                self._alignment_pinned.add(name)
+            else:
+                pm.alpha = alpha_val
+                pm.omega = omega_val
+                pm.u = u_val
 
     @property
     def param_groups(self) -> list[dict]:
@@ -273,10 +321,19 @@ class Parametrization:
                 pm._w0 = pm.weight.detach().clone()
 
     def _sync_lrs(self, optimizer: torch.optim.Optimizer | None) -> None:
-        """Recompute LRs from current lr_prefactor + c, sync to optimizer."""
+        """Recompute LRs from current lr_prefactor + c, sync to optimizer.
+
+        When ``c_ema > 0``, blends each group's ``c`` toward ``c_target``
+        every call: ``c = c_ema * c + (1 - c_ema) * c_target``.
+        """
+        ema = self._c_ema
         for group in self._param_groups:
             if not group.get("maxp_managed", False):
                 continue
+            if ema > 0:
+                name = group["layer_name"]
+                target = self._c_target.get(name, group["c"])
+                group["c"] = ema * group["c"] + (1 - ema) * target
             fan_in = group["fan_in"]
             c = group["c"]
             group["lr"] = self.lr_prefactor * (fan_in ** (-c))
@@ -327,6 +384,8 @@ class Parametrization:
         from maxp.alignment import compute_alignment
 
         for name, pm in self._pms:
+            if name in self._alignment_pinned:
+                continue
             if pm._z0 is None or name not in current:
                 continue
             z0, w0 = pm._z0, pm._w0
@@ -343,13 +402,15 @@ class Parametrization:
             self._sync_lrs(optimizer)
             return
 
-        # 4. Update c values in param groups
+        # 4. Update c targets (blending happens in _sync_lrs)
         for group in self._param_groups:
             if not group.get("maxp_managed", False):
                 continue
             name = group["layer_name"]
             if name in c_by_name:
-                group["c"] = float(c_by_name[name])
+                self._c_target[name] = float(c_by_name[name])
+                if self._c_ema == 0:
+                    group["c"] = float(c_by_name[name])
 
         # 5. Recompute LRs and sync
         self._sync_lrs(optimizer)

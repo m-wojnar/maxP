@@ -73,6 +73,27 @@ def batch_iter(data, seq_len, batch_size):
         yield x, y
 
 
+def load_openwebtext(data_dir="./data/openwebtext"):
+    """Load pre-tokenized OpenWebText as numpy mmap. Returns (mmap, vocab_size)."""
+    train_path = os.path.join(data_dir, "train.bin")
+    if not os.path.exists(train_path):
+        raise FileNotFoundError(
+            f"{train_path} not found. Run prepare.py first to tokenize OpenWebText."
+        )
+    data = np.memmap(train_path, dtype=np.uint16, mode="r")
+    return data, 50257  # GPT-2 vocab size
+
+
+def batch_iter_mmap(data_mmap, seq_len, batch_size, device):
+    """Yield random batches from a numpy mmap, moving to device on-the-fly."""
+    n = len(data_mmap) - seq_len - 1
+    while True:
+        idx = torch.randint(0, n, (batch_size,))
+        x = torch.stack([torch.from_numpy(data_mmap[i:i+seq_len].astype(np.int64)) for i in idx])
+        y = torch.stack([torch.from_numpy(data_mmap[i+1:i+seq_len+1].astype(np.int64)) for i in idx])
+        yield x.to(device), y.to(device)
+
+
 # ── SP (a,b) overrides ─────────────────────────────────────────────────
 # SP: a=0 for all layers, b=0 for embedding, b=0.5 for hidden/readout.
 SP_AB = {

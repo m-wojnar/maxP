@@ -35,11 +35,13 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "datasets>=3.0.0",
     "matplotlib>=3.10.8",
     "pandas>=2.3.3",
     "pytest>=9.0.0",
     "pytest-cov>=7.0.0",
     "pyyaml>=6.0.3",
+    "tiktoken>=0.7.0",
     "torchvision>=0.24.1",
     "tqdm>=4.60.0",
 ]
