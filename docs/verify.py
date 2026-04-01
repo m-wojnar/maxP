@@ -57,7 +57,7 @@ section("1. LP Solver — Known Parametrization Recovery")
 
 from tests.modules.chain_solver import find_c
 
-print("The LP solver takes (a, b) per layer and alignment (alpha, omega, u)")
+print("The LP solver takes (a, b) per layer and alignment (align_z0_dW, align_dZ_w0, align_dZ_dW)")
 print("and returns optimal c values. We verify it recovers known results.\n")
 
 # Default (a, b) for muP: embedding=(-0.5, 0.5), hidden=(0, 0.5), readout=(0.5, 0.5)
@@ -71,7 +71,7 @@ for i, (a, b) in enumerate(zip(al, bl)):
 print()
 
 # --- Full alignment → muP ---
-print("--- Full alignment (alpha=1, omega=0.5, u=1) → expected muP ---")
+print("--- Full alignment (align_z0_dW=1, align_dZ_w0=0.5, align_dZ_dW=1) → expected muP ---")
 cl_full, rl_full = find_c(al, bl, [1.0]*3, [0.5]*3, [1.0]*3, optimizer_type="adam")
 print(f"  Solved c:  {[f'{c:.4f}' for c in cl_full]}")
 print(f"  Solved r:  {[f'{r:.4f}' for r in rl_full]}")
@@ -83,7 +83,7 @@ assert_check("readout c = 0.5", abs(cl_full[2] - 0.5) < 1e-6, f"got {cl_full[2]:
 assert_check("all r >= 0", all(r >= -1e-9 for r in rl_full))
 
 # --- No alignment → different c ---
-print("\n--- No alignment (alpha=0.5, omega=0.5, u=0.5) ---")
+print("\n--- No alignment (align_z0_dW=0.5, align_dZ_w0=0.5, align_dZ_dW=0.5) ---")
 cl_no, rl_no = find_c(al, bl, [0.5]*3, [0.5]*3, [0.5]*3, optimizer_type="adam")
 print(f"  Solved c:  {[f'{c:.4f}' for c in cl_no]}")
 print(f"  Solved r:  {[f'{r:.4f}' for r in rl_no]}")
@@ -126,12 +126,12 @@ section("2. LP Solver — Constraint Satisfaction")
 print("For the full-alignment muP solution, we manually verify the constraints.")
 print("Constraints (Adam, 3-layer):")
 print("  r[0] = a[0] + c[0]")
-print("  r[1] = min(a[1]+c[1]-alpha, a[1]+c[1]+r[0]-u, 0.5+r[0]-omega)")
-print("  r[2] = min(a[2]+b[2]+r[1]-omega, a[2]+c[2]-alpha, a[2]+c[2]+r[1]-u)")
+print("  r[1] = min(a[1]+c[1]-align_z0_dW, a[1]+c[1]+r[0]-align_dZ_dW, 0.5+r[0]-align_dZ_w0)")
+print("  r[2] = min(a[2]+b[2]+r[1]-align_dZ_w0, a[2]+c[2]-align_z0_dW, a[2]+c[2]+r[1]-align_dZ_dW)")
 print()
 
 a, b, c, r = al, bl, cl_full, rl_full
-alpha, omega, u = 1.0, 0.5, 1.0
+align_z0_dW, align_dZ_w0, align_dZ_dW = 1.0, 0.5, 1.0
 
 # Layer 0
 r0_expected = a[0] + c[0]
@@ -139,17 +139,17 @@ print(f"  r[0] = {a[0]} + {c[0]:.4f} = {r0_expected:.4f}  (actual: {r[0]:.4f})")
 assert_check("r[0] matches", abs(r0_expected - r[0]) < 1e-6)
 
 # Layer 1
-x1 = a[1] + c[1] - alpha
-x2 = a[1] + c[1] + r[0] - u
-x3 = 0.5 + r[0] - omega
+x1 = a[1] + c[1] - align_z0_dW
+x2 = a[1] + c[1] + r[0] - align_dZ_dW
+x3 = 0.5 + r[0] - align_dZ_w0
 r1_expected = min(x1, x2, x3)
 print(f"  r[1] = min({x1:.4f}, {x2:.4f}, {x3:.4f}) = {r1_expected:.4f}  (actual: {r[1]:.4f})")
 assert_check("r[1] matches", abs(r1_expected - r[1]) < 1e-6)
 
 # Layer 2
-x1 = a[2] + b[2] + r[1] - omega
-x2 = a[2] + c[2] - alpha
-x3 = a[2] + c[2] + r[1] - u
+x1 = a[2] + b[2] + r[1] - align_dZ_w0
+x2 = a[2] + c[2] - align_z0_dW
+x3 = a[2] + c[2] + r[1] - align_dZ_dW
 r2_expected = min(x1, x2, x3)
 print(f"  r[2] = min({x1:.4f}, {x2:.4f}, {x3:.4f}) = {r2_expected:.4f}  (actual: {r[2]:.4f})")
 assert_check("r[2] matches", abs(r2_expected - r[2]) < 1e-6)
@@ -231,14 +231,14 @@ for trial in range(N_TRIALS):
     al.append(a_r); bl.append(ab_sum - a_r)
 
     # Random alignment per layer
-    alpha_l = [rng.uniform(0.5, 1.0) for _ in range(n_layers)]
-    omega_l = [rng.uniform(0.5, 1.0) for _ in range(n_layers)]
-    u_l     = [rng.uniform(0.5, 1.0) for _ in range(n_layers)]
+    align_z0_dW_l = [rng.uniform(0.5, 1.0) for _ in range(n_layers)]
+    align_dZ_w0_l = [rng.uniform(0.5, 1.0) for _ in range(n_layers)]
+    align_dZ_dW_l = [rng.uniform(0.5, 1.0) for _ in range(n_layers)]
 
     # Solve twice
     try:
-        cl1, rl1 = find_c(al, bl, alpha_l, omega_l, u_l, optimizer_type="adam")
-        cl2, rl2 = find_c(al, bl, alpha_l, omega_l, u_l, optimizer_type="adam")
+        cl1, rl1 = find_c(al, bl, align_z0_dW_l, align_dZ_w0_l, align_dZ_dW_l, optimizer_type="adam")
+        cl2, rl2 = find_c(al, bl, align_z0_dW_l, align_dZ_w0_l, align_dZ_dW_l, optimizer_type="adam")
     except ValueError:
         # Some extreme (a,b) combos may be infeasible — skip
         continue
@@ -254,7 +254,7 @@ for trial in range(N_TRIALS):
     for i in range(n_layers):
         perturbed_c = list(cl1)
         perturbed_c[i] -= 0.01
-        _, rl_p = find_c(al, bl, alpha_l, omega_l, u_l, optimizer_type="adam")
+        _, rl_p = find_c(al, bl, align_z0_dW_l, align_dZ_w0_l, align_dZ_dW_l, optimizer_type="adam")
         # Re-solve with perturbed c isn't the right check — we need to manually
         # evaluate the constraints. But for a quick check, we verify the original
         # solution's objective is <= the perturbed one (perturbing down should
@@ -297,11 +297,11 @@ for trial in range(3):
     ab_sum = rng2.uniform(0.5, 1.5)
     a_r = rng2.uniform(-0.5, ab_sum + 0.5)
     al_s.append(a_r); bl_s.append(ab_sum - a_r)
-    alpha_s = [rng2.uniform(0.5, 1.0) for _ in range(n_layers)]
-    omega_s = [rng2.uniform(0.5, 1.0) for _ in range(n_layers)]
-    u_s     = [rng2.uniform(0.5, 1.0) for _ in range(n_layers)]
+    align_z0_dW_s = [rng2.uniform(0.5, 1.0) for _ in range(n_layers)]
+    align_dZ_w0_s = [rng2.uniform(0.5, 1.0) for _ in range(n_layers)]
+    align_dZ_dW_s = [rng2.uniform(0.5, 1.0) for _ in range(n_layers)]
     try:
-        cl_s, rl_s = find_c(al_s, bl_s, alpha_s, omega_s, u_s, optimizer_type="adam")
+        cl_s, rl_s = find_c(al_s, bl_s, align_z0_dW_s, align_dZ_w0_s, align_dZ_dW_s, optimizer_type="adam")
         print(f"    Trial {trial}: {n_layers} layers, "
               f"c=[{', '.join(f'{c:.3f}' for c in cl_s)}], "
               f"all r≥0: {all(r >= -1e-9 for r in rl_s)}")
@@ -341,17 +341,17 @@ for trial in range(N_XVAL_TRIALS):
     al_xv.append(a_r); bl_xv.append(ab_sum - a_r)
 
     # Random alignment
-    alpha_xv = [rng_xval.uniform(0.5, 1.0) for _ in range(n_layers)]
-    omega_xv = [rng_xval.uniform(0.5, 1.0) for _ in range(n_layers)]
-    u_xv     = [rng_xval.uniform(0.5, 1.0) for _ in range(n_layers)]
+    align_z0_dW_xv = [rng_xval.uniform(0.5, 1.0) for _ in range(n_layers)]
+    align_dZ_w0_xv = [rng_xval.uniform(0.5, 1.0) for _ in range(n_layers)]
+    align_dZ_dW_xv = [rng_xval.uniform(0.5, 1.0) for _ in range(n_layers)]
 
     # Also test both optimizers
     opt_type = "adam" if trial % 2 == 0 else "sgd"
 
     try:
-        cl_old, rl_old = find_c_old(al_xv, bl_xv, alpha_xv, omega_xv, u_xv,
+        cl_old, rl_old = find_c_old(al_xv, bl_xv, align_z0_dW_xv, align_dZ_w0_xv, align_dZ_dW_xv,
                                      optimizer_type=opt_type)
-        cl_new, rl_new = find_c_new(al_xv, bl_xv, alpha_xv, omega_xv, u_xv,
+        cl_new, rl_new = find_c_new(al_xv, bl_xv, align_z0_dW_xv, align_dZ_w0_xv, align_dZ_dW_xv,
                                      optimizer_type=opt_type)
     except ValueError:
         n_skip += 1
@@ -393,13 +393,13 @@ for trial in range(5):
     ab_sum = rng_xv2.uniform(0.5, 1.5)
     a_r = rng_xv2.uniform(-0.5, ab_sum + 0.5)
     al_s.append(a_r); bl_s.append(ab_sum - a_r)
-    alpha_s = [rng_xv2.uniform(0.5, 1.0) for _ in range(n_layers)]
-    omega_s = [rng_xv2.uniform(0.5, 1.0) for _ in range(n_layers)]
-    u_s     = [rng_xv2.uniform(0.5, 1.0) for _ in range(n_layers)]
+    align_z0_dW_s2 = [rng_xv2.uniform(0.5, 1.0) for _ in range(n_layers)]
+    align_dZ_w0_s2 = [rng_xv2.uniform(0.5, 1.0) for _ in range(n_layers)]
+    align_dZ_dW_s2 = [rng_xv2.uniform(0.5, 1.0) for _ in range(n_layers)]
     opt_t = "adam" if trial % 2 == 0 else "sgd"
     try:
-        co, _ = find_c_old(al_s, bl_s, alpha_s, omega_s, u_s, optimizer_type=opt_t)
-        cn, _ = find_c_new(al_s, bl_s, alpha_s, omega_s, u_s, optimizer_type=opt_t)
+        co, _ = find_c_old(al_s, bl_s, align_z0_dW_s2, align_dZ_w0_s2, align_dZ_dW_s2, optimizer_type=opt_t)
+        cn, _ = find_c_new(al_s, bl_s, align_z0_dW_s2, align_dZ_w0_s2, align_dZ_dW_s2, optimizer_type=opt_t)
         maxd = max(abs(a - b) for a, b in zip(co, cn))
         print(f"    Trial {trial}: {n_layers} layers, {opt_t}, max|Δc|={maxd:.2e}")
     except ValueError:
@@ -425,9 +425,9 @@ assert_check("layer_type stored", pm.layer_type == "hidden")
 assert_check("scale defaults to 1.0", pm.scale == 1.0)
 
 print("\n--- Alignment attrs default to None ---")
-assert_check("alpha is None", pm.alpha is None)
-assert_check("omega is None", pm.omega is None)
-assert_check("u is None", pm.u is None)
+assert_check("align_z0_dW is None", pm.align_z0_dW is None)
+assert_check("align_dZ_w0 is None", pm.align_dZ_w0 is None)
+assert_check("align_dZ_dW is None", pm.align_dZ_dW is None)
 assert_check("_z0 is None", pm._z0 is None)
 assert_check("_w0 is None", pm._w0 is None)
 
@@ -525,8 +525,8 @@ for g in param.param_groups:
 print("\n--- Alignment preset on PMs ---")
 for name, pm in [("emb", model.emb), ("hid", model.hid), ("head", model.head)]:
     assert_check(
-        f"{name} alpha=1.0, omega=0.5, u=1.0",
-        pm.alpha == 1.0 and pm.omega == 0.5 and pm.u == 1.0,
+        f"{name} align_z0_dW=1.0, align_dZ_w0=0.5, align_dZ_dW=1.0",
+        pm.align_z0_dW == 1.0 and pm.align_dZ_w0 == 0.5 and pm.align_dZ_dW == 1.0,
     )
 
 
@@ -568,9 +568,9 @@ torch.manual_seed(0)
 m5b = MLP5()
 p5b = Parametrization(m5b, lr_prefactor=0.01, alignment="full")
 # Manually set different alignment on each hidden PM, then re-solve
-m5b.h0.alpha, m5b.h0.omega, m5b.h0.u = 0.8, 0.3, 0.6
-m5b.h1.alpha, m5b.h1.omega, m5b.h1.u = 1.0, 0.5, 1.0  # full
-m5b.h2.alpha, m5b.h2.omega, m5b.h2.u = 0.5, 0.2, 0.3
+m5b.h0.align_z0_dW, m5b.h0.align_dZ_w0, m5b.h0.align_dZ_dW = 0.8, 0.3, 0.6
+m5b.h1.align_z0_dW, m5b.h1.align_dZ_w0, m5b.h1.align_dZ_dW = 1.0, 0.5, 1.0  # full
+m5b.h2.align_z0_dW, m5b.h2.align_dZ_w0, m5b.h2.align_dZ_dW = 0.5, 0.2, 0.3
 c_by_name = p5b._resolve_chain()
 print(f"  Per-PM c values: {c_by_name}")
 assert_check(
@@ -592,39 +592,35 @@ print("--- No change → zero alignment ---")
 torch.manual_seed(0)
 z0 = torch.randn(16, 64)
 w0 = torch.randn(64, 64)
-a, o, u = compute_alignment(z0, w0, z0, w0, fan_in=64)
-assert_check("alpha = 0 when dw=0, dz=0", a == 0.0)
-assert_check("omega = 0 when dw=0, dz=0", o == 0.0)
-assert_check("u = 0 when dw=0, dz=0", u == 0.0)
+a_z0_dW, a_dZ_w0, a_dZ_dW = compute_alignment(z0, w0, z0, w0, fan_in=64)
+assert_check("align_z0_dW = 0 when dW=0, dZ=0", a_z0_dW == 0.0)
+assert_check("align_dZ_w0 = 0 when dW=0, dZ=0", a_dZ_w0 == 0.0)
+assert_check("align_dZ_dW = 0 when dW=0, dZ=0", a_dZ_dW == 0.0)
 
-print("\n--- Weight change only (dz=0) → alpha nonzero, omega=u=0 ---")
+print("\n--- Weight change only (dZ=0) → align_z0_dW nonzero, align_dZ_w0=align_dZ_dW=0 ---")
 w1 = w0 + 0.1 * torch.randn_like(w0)
-a, o, u = compute_alignment(z0, w0, z0, w1, fan_in=64)
-print(f"  alpha={a:.4f}, omega={o:.4f}, u={u:.4f}")
-assert_check("alpha nonzero", abs(a) > 1e-6)
-assert_check("omega = 0 (no dz)", o == 0.0)
-assert_check("u = 0 (no dz)", u == 0.0)
+a_z0_dW, a_dZ_w0, a_dZ_dW = compute_alignment(z0, w0, z0, w1, fan_in=64)
+print(f"  align_z0_dW={a_z0_dW:.4f}, align_dZ_w0={a_dZ_w0:.4f}, align_dZ_dW={a_dZ_dW:.4f}")
+assert_check("align_z0_dW nonzero", abs(a_z0_dW) > 1e-6)
+assert_check("align_dZ_w0 = 0 (no dZ)", a_dZ_w0 == 0.0)
+assert_check("align_dZ_dW = 0 (no dZ)", a_dZ_dW == 0.0)
 
 print("\n--- Both change → all three nonzero ---")
 z1 = z0 + 0.05 * torch.randn_like(z0)
-a, o, u = compute_alignment(z0, w0, z1, w1, fan_in=64)
-print(f"  alpha={a:.4f}, omega={o:.4f}, u={u:.4f}")
-assert_check("alpha nonzero", abs(a) > 1e-6)
-assert_check("omega nonzero", abs(o) > 1e-6)
-assert_check("u nonzero", abs(u) > 1e-6)
-assert_check("all finite", math.isfinite(a) and math.isfinite(o) and math.isfinite(u))
+a_z0_dW, a_dZ_w0, a_dZ_dW = compute_alignment(z0, w0, z1, w1, fan_in=64)
+print(f"  align_z0_dW={a_z0_dW:.4f}, align_dZ_w0={a_dZ_w0:.4f}, align_dZ_dW={a_dZ_dW:.4f}")
+assert_check("align_z0_dW nonzero", abs(a_z0_dW) > 1e-6)
+assert_check("align_dZ_w0 nonzero", abs(a_dZ_w0) > 1e-6)
+assert_check("align_dZ_dW nonzero", abs(a_dZ_dW) > 1e-6)
+assert_check("all finite", math.isfinite(a_z0_dW) and math.isfinite(a_dZ_w0) and math.isfinite(a_dZ_dW))
 
 print("\n--- Extreme inputs (zeros) → sanitized, no inf/nan ---")
 z_zero = torch.zeros(4, 8)
 w_zero = torch.zeros(8, 8)
-a, o, u = compute_alignment(z_zero, w_zero, torch.randn(4,8)*1e-20, torch.randn(8,8)*1e-20, fan_in=8)
-assert_check("alpha finite", math.isfinite(a))
-assert_check("omega finite", math.isfinite(o))
-assert_check("u finite", math.isfinite(u))
-
-print("\n--- Spectral mode works ---")
-a, o, u = compute_alignment(z0, w0, z1, w1, fan_in=64, norm_mode="spectral")
-assert_check("spectral mode: all finite", math.isfinite(a) and math.isfinite(o) and math.isfinite(u))
+a_z0_dW, a_dZ_w0, a_dZ_dW = compute_alignment(z_zero, w_zero, torch.randn(4,8)*1e-20, torch.randn(8,8)*1e-20, fan_in=8)
+assert_check("align_z0_dW finite", math.isfinite(a_z0_dW))
+assert_check("align_dZ_w0 finite", math.isfinite(a_dZ_w0))
+assert_check("align_dZ_dW finite", math.isfinite(a_dZ_dW))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -682,8 +678,8 @@ param.step(X, opt)
 for name, pm in [("emb", model.emb), ("hid", model.hid), ("head", model.head)]:
     assert_check(
         f"{name} alignment finite after step",
-        math.isfinite(pm.alpha) and math.isfinite(pm.omega) and math.isfinite(pm.u),
-        f"alpha={pm.alpha:.4f}, omega={pm.omega:.4f}, u={pm.u:.4f}",
+        math.isfinite(pm.align_z0_dW) and math.isfinite(pm.align_dZ_w0) and math.isfinite(pm.align_dZ_dW),
+        f"align_z0_dW={pm.align_z0_dW:.4f}, align_dZ_w0={pm.align_dZ_w0:.4f}, align_dZ_dW={pm.align_dZ_dW:.4f}",
     )
 
 post_lrs = [g["lr"] for g in param.param_groups if g.get("maxp_managed")]
@@ -833,8 +829,8 @@ assert_check(
 # Check alignment evolved from preset
 print("\n  Final PM alignment values:")
 for name, pm in [("emb", model.emb), ("hid", model.hid), ("head", model.head)]:
-    print(f"    {name:5s}  alpha={pm.alpha:.4f}  omega={pm.omega:.4f}  u={pm.u:.4f}")
-    assert_check(f"{name} alignment is finite", math.isfinite(pm.alpha) and math.isfinite(pm.omega) and math.isfinite(pm.u))
+    print(f"    {name:5s}  align_z0_dW={pm.align_z0_dW:.4f}  align_dZ_w0={pm.align_dZ_w0:.4f}  align_dZ_dW={pm.align_dZ_dW:.4f}")
+    assert_check(f"{name} alignment is finite", math.isfinite(pm.align_z0_dW) and math.isfinite(pm.align_dZ_w0) and math.isfinite(pm.align_dZ_dW))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -877,10 +873,10 @@ fig, axes = plt.subplots(2, 3, figsize=(16, 9))
 ax = axes[0, 0]
 alignments = np.linspace(0, 1, 20)
 c_emb, c_hid, c_out = [], [], []
-for alpha_val in alignments:
+for alignment_val in alignments:
     cl, _ = find_c(
         [-0.5, 0.0, 0.5], [0.5, 0.5, 0.5],
-        [alpha_val]*3, [alpha_val*0.5]*3, [alpha_val]*3,
+        [alignment_val]*3, [alignment_val*0.5]*3, [alignment_val]*3,
         optimizer_type="adam",
     )
     c_emb.append(cl[0])
@@ -961,9 +957,9 @@ p_track = Parametrization(m_track, lr_prefactor=0.01, alignment="full",
 opt_track = torch.optim.Adam(p_track.param_groups)
 p_track.capture_initial(X_train[:32])
 
-history = {"emb": {"alpha": [], "omega": [], "u": []},
-           "hid": {"alpha": [], "omega": [], "u": []},
-           "head": {"alpha": [], "omega": [], "u": []}}
+history = {"emb": {"align_z0_dW": [], "align_dZ_w0": [], "align_dZ_dW": []},
+           "hid": {"align_z0_dW": [], "align_dZ_w0": [], "align_dZ_dW": []},
+           "head": {"align_z0_dW": [], "align_dZ_w0": [], "align_dZ_dW": []}}
 
 for step in range(200):
     idx = torch.randint(0, 128, (16,))
@@ -973,17 +969,17 @@ for step in range(200):
     opt_track.step()
     p_track.step(X_train[:32], opt_track)
     for name, pm in [("emb", m_track.emb), ("hid", m_track.hid), ("head", m_track.head)]:
-        history[name]["alpha"].append(pm.alpha)
-        history[name]["omega"].append(pm.omega)
-        history[name]["u"].append(pm.u)
+        history[name]["align_z0_dW"].append(pm.align_z0_dW)
+        history[name]["align_dZ_w0"].append(pm.align_dZ_w0)
+        history[name]["align_dZ_dW"].append(pm.align_dZ_dW)
 
 colors = {"emb": "#1f77b4", "hid": "#ff7f0e", "head": "#2ca02c"}
 for name, h in history.items():
-    ax.plot(h["alpha"], color=colors[name], linewidth=1.2, label=f"{name}")
+    ax.plot(h["align_z0_dW"], color=colors[name], linewidth=1.2, label=f"{name}")
 ax.axhline(1.0, color="k", ls=":", alpha=0.4, label="full=1.0")
 ax.set_xlabel("Step")
-ax.set_ylabel(r"$\alpha$")
-ax.set_title(r"Per-layer $\alpha$ during training")
+ax.set_ylabel("align_z0_dW")
+ax.set_title("Per-layer align_z0_dW during training")
 ax.legend(fontsize="small")
 ax.grid(True, alpha=0.3)
 

@@ -27,27 +27,27 @@ from maxp.solver import find_c_adam, find_c_sgd
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _chain_graph(alpha=1.0, omega=0.5, u=1.0):
+def _chain_graph(align_z0_dW=1.0, align_dZ_w0=0.5, align_dZ_dW=1.0):
     """emb -> h -> head, standard muP a/b values."""
     return OpGraph({
         "emb":  DagNode(name="emb",  a=-0.5, b=0.5, layer_type="embedding",
                         has_weight=True, width_dim=32,
                         predecessors=[], successors=["h"],
-                        alpha=alpha, omega=omega, u=u),
+                        align_z0_dW=align_z0_dW, align_dZ_w0=align_dZ_w0, align_dZ_dW=align_dZ_dW),
         "h":    DagNode(name="h",    a=0.0, b=0.5, layer_type="hidden",
                         has_weight=True, width_dim=32,
                         predecessors=["emb"], successors=["head"],
-                        alpha=alpha, omega=omega, u=u),
+                        align_z0_dW=align_z0_dW, align_dZ_w0=align_dZ_w0, align_dZ_dW=align_dZ_dW),
         "head": DagNode(name="head", a=0.5, b=0.5, layer_type="readout",
                         has_weight=True, width_dim=32,
                         predecessors=["h"], successors=[],
-                        alpha=alpha, omega=omega, u=u),
+                        align_z0_dW=align_z0_dW, align_dZ_w0=align_dZ_w0, align_dZ_dW=align_dZ_dW),
     })
 
 
-def _swiglu_graph(alpha=1.0, omega=0.5, u=1.0):
+def _swiglu_graph(align_z0_dW=1.0, align_dZ_w0=0.5, align_dZ_dW=1.0):
     """emb -> gate,up -> down -> head.  SUM merge on down (multiply)."""
-    kw = dict(alpha=alpha, omega=omega, u=u)
+    kw = dict(align_z0_dW=align_z0_dW, align_dZ_w0=align_dZ_w0, align_dZ_dW=align_dZ_dW)
     return OpGraph({
         "emb":  DagNode(name="emb",  a=-0.5, b=0.5, layer_type="embedding",
                         has_weight=True, width_dim=32,
@@ -68,19 +68,19 @@ def _swiglu_graph(alpha=1.0, omega=0.5, u=1.0):
     })
 
 
-def _compute_hidden_r(c, r_in, alpha=1.0, omega=0.5, u=1.0, a=0.0, b=0.5):
+def _compute_hidden_r(c, r_in, align_z0_dW=1.0, align_dZ_w0=0.5, align_dZ_dW=1.0, a=0.0, b=0.5):
     """Manually compute r for a hidden node: r = min(x1, x2, x3)."""
-    x1 = a + c - alpha
-    x2 = a + c + r_in - u
-    x3 = (a + b) + r_in - omega
+    x1 = a + c - align_z0_dW
+    x2 = a + c + r_in - align_dZ_dW
+    x3 = (a + b) + r_in - align_dZ_w0
     return min(x1, x2, x3)
 
 
-def _compute_readout_r(c, r_in, alpha=1.0, omega=0.5, u=1.0, a=0.5, b=0.5):
+def _compute_readout_r(c, r_in, align_z0_dW=1.0, align_dZ_w0=0.5, align_dZ_dW=1.0, a=0.5, b=0.5):
     """Manually compute r for a readout node."""
-    x1 = (a + b) + r_in - omega
-    x2 = a + c - alpha
-    x3 = a + c + r_in - u
+    x1 = (a + b) + r_in - align_dZ_w0
+    x2 = a + c - align_z0_dW
+    x3 = a + c + r_in - align_dZ_dW
     return min(x1, x2, x3)
 
 
@@ -110,7 +110,7 @@ class TestAnalyticalCorrectness:
 
     def test_dag_matches_flat_solver_no_alignment(self):
         """Same check with no-alignment preset."""
-        res = find_c_adam(_chain_graph(alpha=0, omega=0, u=0))
+        res = find_c_adam(_chain_graph(align_z0_dW=0, align_dZ_w0=0, align_dZ_dW=0))
         cl_flat, rl_flat = find_c_adam_chain(
             [-0.5, 0.0, 0.5], [0.5, 0.5, 0.5],
             [0.0]*3, [0.0]*3, [0.0]*3,
@@ -204,14 +204,15 @@ class TestPerOpDifferentiation:
         The chain solver can't do this — it collapses all 'hidden' ops
         into one c value.
 
-        Key insight: changing alpha alone on `down` won't differentiate c
-        when u >= alpha and r_in = 0, because x2 = c + r_in - u still
-        dominates. We also adjust u so the alpha constraint can bind.
+        Key insight: changing align_z0_dW alone on `down` won't differentiate c
+        when align_dZ_dW >= align_z0_dW and r_in = 0, because
+        x2 = c + r_in - align_dZ_dW still dominates. We also adjust
+        align_dZ_dW so the align_z0_dW constraint can bind.
         """
         # Simulate measured alignment: down has weaker alignment
         g = _swiglu_graph()
-        g.nodes["down"].alpha = 0.5
-        g.nodes["down"].u = 0.5  # weaker cross-term too
+        g.nodes["down"].align_z0_dW = 0.5
+        g.nodes["down"].align_dZ_dW = 0.5  # weaker cross-term too
 
         res = find_c_adam(g)
 
@@ -219,8 +220,9 @@ class TestPerOpDifferentiation:
         assert abs(res["gate"][0] - res["up"][0]) < 1e-6
 
         # down should get a DIFFERENT c than gate/up
-        # With alpha=0.5, u=0.5 on down: x1 = c - 0.5, x2 = c + r_in - 0.5
-        # Both allow c = 0.5 (vs gate's c = 1.0 from alpha=1.0, u=1.0)
+        # With align_z0_dW=0.5, align_dZ_dW=0.5 on down:
+        #   x1 = c - 0.5, x2 = c + r_in - 0.5
+        # Both allow c = 0.5 (vs gate's c = 1.0 from align_z0_dW=1.0, align_dZ_dW=1.0)
         assert abs(res["down"][0] - res["gate"][0]) > 0.1
 
     def test_chain_solver_collapses_but_dag_differentiates(self):
@@ -228,16 +230,16 @@ class TestPerOpDifferentiation:
         DAG solver can differentiate when alignment differs per op."""
         g = _swiglu_graph()
         # Give different alignment to each hidden op
-        g.nodes["gate"].alpha = 0.8
-        g.nodes["up"].alpha = 0.8
-        g.nodes["down"].alpha = 0.3
+        g.nodes["gate"].align_z0_dW = 0.8
+        g.nodes["up"].align_z0_dW = 0.8
+        g.nodes["down"].align_z0_dW = 0.3
 
         res = find_c_adam(g)
 
         c_gate = res["gate"][0]
         c_down = res["down"][0]
 
-        # They must be different (different alpha)
+        # They must be different (different align_z0_dW)
         assert abs(c_gate - c_down) > 0.1
 
         # Chain solver would give them all the same c — that's the limitation
@@ -301,9 +303,9 @@ class TestPerOpDifferentiation:
         """Manually verify the solver's r values satisfy the constraint formulas."""
         g = _swiglu_graph()
         # Use non-trivial alignment to make constraints interesting
-        g.nodes["gate"].alpha = 0.7
-        g.nodes["up"].alpha = 0.7
-        g.nodes["down"].alpha = 0.4
+        g.nodes["gate"].align_z0_dW = 0.7
+        g.nodes["up"].align_z0_dW = 0.7
+        g.nodes["down"].align_z0_dW = 0.4
 
         res = find_c_adam(g)
 
@@ -314,20 +316,20 @@ class TestPerOpDifferentiation:
         # Gate: r = min(x1, x2, x3) with r_in = r_emb
         c_gate = res["gate"][0]
         r_gate_manual = _compute_hidden_r(
-            c_gate, r_emb, alpha=0.7, omega=0.5, u=1.0)
+            c_gate, r_emb, align_z0_dW=0.7, align_dZ_w0=0.5, align_dZ_dW=1.0)
         assert abs(res["gate"][1] - r_gate_manual) < 1e-6
 
         # Up: same structure as gate
         c_up = res["up"][0]
         r_up_manual = _compute_hidden_r(
-            c_up, r_emb, alpha=0.7, omega=0.5, u=1.0)
+            c_up, r_emb, align_z0_dW=0.7, align_dZ_w0=0.5, align_dZ_dW=1.0)
         assert abs(res["up"][1] - r_up_manual) < 1e-6
 
         # Down: SUM merge, r_in = r_gate + r_up
         r_in_down = res["gate"][1] + res["up"][1]
         c_down = res["down"][0]
         r_down_manual = _compute_hidden_r(
-            c_down, r_in_down, alpha=0.4, omega=0.5, u=1.0)
+            c_down, r_in_down, align_z0_dW=0.4, align_dZ_w0=0.5, align_dZ_dW=1.0)
         assert abs(res["down"][1] - r_down_manual) < 1e-6
 
         # Head: r_in = r_down
@@ -338,7 +340,7 @@ class TestPerOpDifferentiation:
 
     def test_feature_learning_tightens_constraints(self):
         """feature_learning=True forces r=0 at pre-sink nodes, increasing sum(c)."""
-        g = _chain_graph(alpha=0, omega=0, u=0)  # no-alignment for slack
+        g = _chain_graph(align_z0_dW=0, align_dZ_w0=0, align_dZ_dW=0)  # no-alignment for slack
         res_no_fl = find_c_adam(g, feature_learning=False)
         res_fl = find_c_adam(g, feature_learning=True)
 

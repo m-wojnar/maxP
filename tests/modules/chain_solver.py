@@ -18,9 +18,9 @@ from maxp.solver import _min2_lp, _min_lp
 def find_c_adam(
     al: list[float],
     bl: list[float],
-    alpha: list[float],
-    omega: list[float],
-    u: list[float],
+    align_z0_dW: list[float],
+    align_dZ_w0: list[float],
+    align_dZ_dW: list[float],
     solver: plp.LpSolver | None = None,
     feature_learning: bool = False,
     M: float = 10.0,
@@ -34,9 +34,9 @@ def find_c_adam(
     Args:
         al: List of a_l exponents (layer multipliers).
         bl: List of b_l exponents (initialization variance).
-        alpha: List of alpha alignment values (z_0 @ Δw term).
-        omega: List of omega alignment values (Δz @ w_0 term).
-        u: List of u alignment values (Δz @ Δw term).
+        align_z0_dW: List of alignment values for the z0 @ dW^T term.
+        align_dZ_w0: List of alignment values for the dZ @ W0^T term.
+        align_dZ_dW: List of alignment values for the dZ @ dW^T term.
         solver: PuLP solver instance. If None, uses CBC solver.
             Examples: pulp.PULP_CBC_CMD(), pulp.CPLEX_CMD(), pulp.GLPK_CMD().
         feature_learning: If True, enforce feature learning constraint (r_{L-1} = 0).
@@ -52,12 +52,10 @@ def find_c_adam(
         ValueError if LP is infeasible.
     """
 
-    assert len(al) == len(bl) == len(alpha) == len(omega) == len(u)
+    assert len(al) == len(bl) == len(align_z0_dW) == len(align_dZ_w0) == len(align_dZ_dW)
     n = len(al)
 
     # Validate stability-at-initialization conditions for provided (a,b).
-    # These are not LP decision variables here; encoding them as LP constraints
-    # would evaluate to Python booleans and break PuLP.
     if not np.isclose(al[0] + bl[0], 0.0):
         raise ValueError("Invalid (a,b): al[0] + bl[0] must equal 0.0 for stability at initialization.")
     for i in range(1, n - 1):
@@ -88,9 +86,9 @@ def find_c_adam(
         x2 = plp.LpVariable(f"min_x2_{i}")
         x3 = plp.LpVariable(f"min_x3_{i}")
 
-        lp += x1 == al[i] + c[i] - alpha[i]
-        lp += x2 == al[i] + c[i] + r[i - 1] - u[i]
-        lp += x3 == 0.5 + r[i - 1] - omega[i]
+        lp += x1 == al[i] + c[i] - align_z0_dW[i]
+        lp += x2 == al[i] + c[i] + r[i - 1] - align_dZ_dW[i]
+        lp += x3 == 0.5 + r[i - 1] - align_dZ_w0[i]
         lp += r[i] == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
         lp += r[i] >= 0
 
@@ -99,9 +97,9 @@ def find_c_adam(
     x2 = plp.LpVariable(f"min_x2_{n - 1}")
     x3 = plp.LpVariable(f"min_x3_{n - 1}")
 
-    lp += x1 == al[n - 1] + bl[n - 1] + r[n - 2] - omega[n - 1]
-    lp += x2 == al[n - 1] + c[n - 1] - alpha[n - 1]
-    lp += x3 == al[n - 1] + c[n - 1] + r[n - 2] - u[n - 1]
+    lp += x1 == al[n - 1] + bl[n - 1] + r[n - 2] - align_dZ_w0[n - 1]
+    lp += x2 == al[n - 1] + c[n - 1] - align_z0_dW[n - 1]
+    lp += x3 == al[n - 1] + c[n - 1] + r[n - 2] - align_dZ_dW[n - 1]
     lp += r[n - 1] == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
     lp += r[n - 1] >= 0
 
@@ -124,9 +122,9 @@ def find_c_adam(
 def find_c_sgd(
     al: list[float],
     bl: list[float],
-    alpha: list[float],
-    omega: list[float],
-    u: list[float],
+    align_z0_dW: list[float],
+    align_dZ_w0: list[float],
+    align_dZ_dW: list[float],
     solver: plp.LpSolver | None = None,
     feature_learning: bool = False,
     M: float = 10.0,
@@ -140,9 +138,9 @@ def find_c_sgd(
     Args:
         al: List of a_l exponents (layer multipliers).
         bl: List of b_l exponents (initialization variance).
-        alpha: List of alpha alignment values.
-        omega: List of omega alignment values.
-        u: List of u alignment values.
+        align_z0_dW: List of alignment values for the z0 @ dW^T term.
+        align_dZ_w0: List of alignment values for the dZ @ W0^T term.
+        align_dZ_dW: List of alignment values for the dZ @ dW^T term.
         solver: PuLP solver instance. If None, uses CBC solver.
         feature_learning: If True, enforce feature learning constraint.
         M: Big-M constant for min/max encoding.
@@ -157,7 +155,7 @@ def find_c_sgd(
         ValueError if LP is infeasible.
     """
 
-    assert len(al) == len(bl) == len(alpha) == len(omega) == len(u)
+    assert len(al) == len(bl) == len(align_z0_dW) == len(align_dZ_w0) == len(align_dZ_dW)
     n = len(al)
 
     # Validate stability-at-initialization conditions for provided (a,b).
@@ -195,9 +193,9 @@ def find_c_sgd(
         x2 = plp.LpVariable(f"min_x2_{i}")
         x3 = plp.LpVariable(f"min_x3_{i}")
 
-        lp += x1 == g[i] + al[i] + c[i] - alpha[i]
-        lp += x2 == g[i] + al[i] + c[i] + r[i - 1] - u[i]
-        lp += x3 == 0.5 + r[i - 1] - omega[i]
+        lp += x1 == g[i] + al[i] + c[i] - align_z0_dW[i]
+        lp += x2 == g[i] + al[i] + c[i] + r[i - 1] - align_dZ_dW[i]
+        lp += x3 == 0.5 + r[i - 1] - align_dZ_w0[i]
         lp += r[i] == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
         lp += r[i] >= 0
 
@@ -206,9 +204,9 @@ def find_c_sgd(
     x2 = plp.LpVariable(f"min_x2_{n - 1}")
     x3 = plp.LpVariable(f"min_x3_{n - 1}")
 
-    lp += x1 == al[n - 1] + bl[n - 1] + r[n - 2] - omega[n - 1]
-    lp += x2 == 2 * al[n - 1] + c[n - 1] - alpha[n - 1]
-    lp += x3 == 2 * al[n - 1] + c[n - 1] + r[n - 2] - u[n - 1]
+    lp += x1 == al[n - 1] + bl[n - 1] + r[n - 2] - align_dZ_w0[n - 1]
+    lp += x2 == 2 * al[n - 1] + c[n - 1] - align_z0_dW[n - 1]
+    lp += x3 == 2 * al[n - 1] + c[n - 1] + r[n - 2] - align_dZ_dW[n - 1]
     lp += r[n - 1] == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
     lp += r[n - 1] >= 0
 
@@ -231,9 +229,9 @@ def find_c_sgd(
 def find_c(
     al: list[float],
     bl: list[float],
-    alpha: list[float],
-    omega: list[float],
-    u: list[float],
+    align_z0_dW: list[float],
+    align_dZ_w0: list[float],
+    align_dZ_dW: list[float],
     optimizer_type: str = "adam",
     solver: plp.LpSolver | None = None,
     feature_learning: bool = False,
@@ -248,9 +246,9 @@ def find_c(
     Args:
         al: List of a_l exponents.
         bl: List of b_l exponents.
-        alpha: List of alpha alignment values.
-        omega: List of omega alignment values.
-        u: List of u alignment values.
+        align_z0_dW: List of alignment values for the z0 @ dW^T term.
+        align_dZ_w0: List of alignment values for the dZ @ W0^T term.
+        align_dZ_dW: List of alignment values for the dZ @ dW^T term.
         optimizer_type: Either "adam" or "sgd".
         solver: PuLP solver instance.
         feature_learning: If True, enforce feature learning constraint.
@@ -266,8 +264,8 @@ def find_c(
     """
 
     if optimizer_type.lower() == "adam":
-        return find_c_adam(al, bl, alpha, omega, u, solver, feature_learning, M)
+        return find_c_adam(al, bl, align_z0_dW, align_dZ_w0, align_dZ_dW, solver, feature_learning, M)
     elif optimizer_type.lower() == "sgd":
-        return find_c_sgd(al, bl, alpha, omega, u, solver, feature_learning, M)
+        return find_c_sgd(al, bl, align_z0_dW, align_dZ_w0, align_dZ_dW, solver, feature_learning, M)
     else:
         raise ValueError(f"Unknown optimizer_type: {optimizer_type}. Must be 'adam' or 'sgd'.")

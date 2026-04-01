@@ -51,7 +51,7 @@ maxp/
 ├── module.py            # ParametrizedModule — marks layers for ABC treatment
 ├── parametrization.py   # Parametrization — main entry point, orchestrates everything
 ├── solver.py            # LP solver (chain + DAG variants, Adam + SGD)
-├── alignment.py         # Compute (alpha, omega, u) alignment metrics
+├── alignment.py         # Compute (align_z0_dW, align_dZ_w0, align_dZ_dW) alignment metrics
 ├── dag.py               # Build PM-to-PM data-flow graph
 ├── trace.py             # Trace matmul ops via __torch_function__
 └── diagnose.py          # Coordinate-check diagnostics (width sweep plots)
@@ -76,7 +76,7 @@ y = z @ w^T
 ```
 
 Each term scales differently with width. The **alignment** values
-(alpha, omega, u) quantify how efficiently matrix products concentrate
+(align_z0_dW, align_dZ_w0, align_dZ_dW) quantify how efficiently matrix products concentrate
 vs spread across dimensions:
 
 - **alpha = 1.0** ("full alignment"): `z_0 @ dw^T` concentrates like a
@@ -89,7 +89,7 @@ largest possible `c` values (strongest LRs) that keep every layer's
 output stable at O(1) scale.
 
 **Static mode**: assume alignment values upfront (e.g. "full" = muP
-assumption: alpha=1, omega=0.5, u=1). Solve once at init.
+assumption: align_z0_dW=1, align_dZ_w0=0.5, align_dZ_dW=1). Solve once at init.
 
 **Dynamic mode**: measure alignment during training from actual (z, w)
 snapshots. Re-solve the LP periodically to adapt LRs.
@@ -118,7 +118,7 @@ class ParametrizedModule(nn.Module):
 | `width_dim` | User | Fan-in dimension that scales with width |
 | `layer_type` | User | `"embedding"`, `"hidden"`, or `"readout"` |
 | `scale` | `Parametrization` | Output multiplier = `width_dim^{-a}` |
-| `alpha, omega, u` | `Parametrization` | Alignment values (from preset or measurement) |
+| `align_z0_dW, align_dZ_w0, align_dZ_dW` | `Parametrization` | Alignment values (from preset or measurement) |
 | `_z0, _w0` | `Parametrization` | Initial snapshots for dynamic alignment |
 
 ### Two modes of wrapping
@@ -249,7 +249,7 @@ Three methods support runtime re-solving:
 **`step(sample_input, optimizer=None)`** — call after each `optimizer.step()`:
 1. Increment step counter; skip if in warmup or not on solve_interval
 2. Capture current activations via forward hooks
-3. Compute `(alpha, omega, u)` per PM using `compute_alignment()`
+3. Compute `(align_z0_dW, align_dZ_w0, align_dZ_dW)` per PM using `compute_alignment()`
 4. Re-solve LP with measured alignment
 5. Update `lr` in param_groups (and sync to optimizer if provided)
 
@@ -277,12 +277,12 @@ programming. Two solver families: **chain** (sequential models) and
 ### Chain solver
 
 ```python
-find_c(al, bl, alpha, omega, u, optimizer_type="adam") -> (cl, rl)
+find_c(al, bl, align_z0_dW, align_dZ_w0, align_dZ_dW, optimizer_type="adam") -> (cl, rl)
 ```
 
 Dispatches to `find_c_adam()` or `find_c_sgd()`.
 
-**Inputs**: Lists of `(a, b, alpha, omega, u)` per layer, one entry per
+**Inputs**: Lists of `(a, b, align_z0_dW, align_dZ_w0, align_dZ_dW)` per layer, one entry per
 weight-bearing PM in chain order.
 
 **Output**: `(cl, rl)` — optimal `c` exponents and stability residuals `r`.
@@ -336,7 +336,7 @@ Same objective and constraint logic, but operates on an `OpGraph` where:
 Pure functions for computing alignment metrics. No coupling to
 `ParametrizedModule` — takes raw tensors in, returns floats out.
 
-### `compute_alignment(z0, w0, z, w, fan_in, norm_mode="rms")`
+### `compute_alignment(z0, w0, z, w, fan_in, )`
 
 Given initial and current (activations, weights), computes:
 
@@ -352,9 +352,9 @@ In RMS mode, this measures how much the matrix product concentrates
 relative to the product of norms, normalised by `log(width)`. A value of
 1.0 means maximal concentration (rank-1-like); 0.5 means random.
 
-Returns `(alpha, omega, u)` as sanitised floats (no inf/nan).
+Returns `(align_z0_dW, align_dZ_w0, align_dZ_dW)` as sanitised floats (no inf/nan).
 
-### `compute_alignments_for_pms(snapshots, fan_ins, norm_mode)`
+### `compute_alignment(z0, w0, z, w, fan_in)`
 
 Batch wrapper: takes a list of `((z0, w0), (z, w))` tuples (one per PM)
 and returns `(alpha_list, omega_list, u_list)`.
@@ -601,7 +601,7 @@ for xb, yb in dataloader:
 The `step()` method:
 1. Skips if still in warmup or not on solve_interval
 2. Captures current activations via forward hooks
-3. Computes `(alpha, omega, u)` per PM
+3. Computes `(align_z0_dW, align_dZ_w0, align_dZ_dW)` per PM
 4. Re-solves the LP
 5. Updates optimizer learning rates
 
@@ -612,7 +612,7 @@ After `step()`, alignment values live on each PM:
 ```python
 for name, pm in param._pms:
     if pm.weight is not None:
-        print(f"{name}: alpha={pm.alpha:.3f}, omega={pm.omega:.3f}, u={pm.u:.3f}")
+        print(f"{name}: alpha={pm.align_z0_dW:.3f}, omega={pm.align_dZ_w0:.3f}, u={pm.align_dZ_dW:.3f}")
 ```
 
 ---
