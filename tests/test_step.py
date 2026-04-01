@@ -237,18 +237,18 @@ class TestInitialAlignmentOnPM:
     def test_full_alignment_preset(self):
         model, param, optimizer, X = _setup(alignment="full")
         for _, pm in param._pms:
-            assert pm.alpha == 1.0
-            assert pm.omega == 0.5
-            assert pm.u == 1.0
+            assert pm.align_z0_dW == 1.0
+            assert pm.align_dZ_w0 == 0.5
+            assert pm.align_dZ_dW == 1.0
 
     def test_no_alignment_preset(self):
         torch.manual_seed(0)
         model = SimpleMLP()
         param = Parametrization(model, lr_prefactor=0.01, alignment="no")
         for _, pm in param._pms:
-            assert pm.alpha == 0.5
-            assert pm.omega == 0.5
-            assert pm.u == 0.5
+            assert pm.align_z0_dW == 0.5
+            assert pm.align_dZ_w0 == 0.5
+            assert pm.align_dZ_dW == 0.5
 
 
 class TestStepInfeasibleLP:
@@ -261,9 +261,9 @@ class TestStepInfeasibleLP:
         # Set extreme alignment on all PMs
         for _, pm in param._pms:
             if pm.weight is not None:
-                pm.alpha = 100.0
-                pm.omega = 100.0
-                pm.u = 100.0
+                pm.align_z0_dW = 100.0
+                pm.align_dZ_w0 = 100.0
+                pm.align_dZ_dW = 100.0
 
         with pytest.raises(ValueError, match="infeasible|optimal"):
             param._resolve()
@@ -337,12 +337,12 @@ class TestStepUpdatesAlignmentOnPM:
 
         for name, pm in param._pms:
             if pm.weight is not None:
-                assert pm.alpha is not None
-                assert pm.omega is not None
-                assert pm.u is not None
-                assert math.isfinite(pm.alpha), f"{name}: alpha={pm.alpha}"
-                assert math.isfinite(pm.omega), f"{name}: omega={pm.omega}"
-                assert math.isfinite(pm.u), f"{name}: u={pm.u}"
+                assert pm.align_z0_dW is not None
+                assert pm.align_dZ_w0 is not None
+                assert pm.align_dZ_dW is not None
+                assert math.isfinite(pm.align_z0_dW), f"{name}: align_z0_dW={pm.align_z0_dW}"
+                assert math.isfinite(pm.align_dZ_w0), f"{name}: align_dZ_w0={pm.align_dZ_w0}"
+                assert math.isfinite(pm.align_dZ_dW), f"{name}: align_dZ_dW={pm.align_dZ_dW}"
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ from maxp.module import ParametrizedModule
 from maxp.dag import DagNode, OpGraph, _DEFAULT_AB
 
 
-# Alignment assumptions: (alpha, omega, u) per layer
+# Alignment assumptions: (align_z0_dW, align_dZ_w0, align_dZ_dW) per layer
 _ALIGNMENT_PRESETS = {
     "full": (1.0, 0.5, 1.0),
     "no": (0.5, 0.5, 0.5),
@@ -81,17 +81,16 @@ class Parametrization:
         c_overrides: Optional dict mapping layer_type → ``c`` to override
             the LP-solved value.  Per-PM ``c`` takes priority over this.
         alignment_overrides: Optional dict mapping layer name, name suffix,
-            or layer_type → ``(alpha, omega, u)`` to pin alignment for
-            specific layers.  Pinned layers skip dynamic measurement in
-            :meth:`step`.  Matching priority: exact name > leaf name
-            (e.g. ``"fc2"`` matches ``"blocks.0.ff.fc2"``) > layer_type.
+            or layer_type → ``(align_z0_dW, align_dZ_w0, align_dZ_dW)`` to
+            pin alignment for specific layers.  Pinned layers skip dynamic
+            measurement in :meth:`step`.  Matching priority: exact name >
+            leaf name (e.g. ``"fc2"`` matches ``"blocks.0.ff.fc2"``) > layer_type.
         sample_input: Optional example input for DAG tracing.  When provided,
             the solver assigns per-PM c values based on the actual data flow
             graph instead of collapsing by layer type.
         warmup_steps: Steps before first dynamic re-solve (default 0).
         solve_interval: Re-solve every N steps (default 1).
         sample_size: Max batch samples kept for alignment measurement (default 32).
-        norm_mode: ``"rms"`` or ``"spectral"`` for alignment computation.
         c_ema: EMA factor for smoothing ``c`` values toward solver targets.
             Each step: ``c = c_ema * c + (1 - c_ema) * c_target``.
             0.0 means instant updates (default), 0.99 means very slow blending.
@@ -113,7 +112,6 @@ class Parametrization:
         warmup_steps: int = 0,
         solve_interval: int = 1,
         sample_size: int = 32,
-        norm_mode: str = "rms",
         c_ema: float = 0.0,
     ):
         self.model = model
@@ -162,7 +160,7 @@ class Parametrization:
                     override = alignment_overrides.get(pm.layer_type)
                 if override is not None:
                     node = graph.nodes[name]
-                    node.alpha, node.omega, node.u = override
+                    node.align_z0_dW, node.align_dZ_w0, node.align_dZ_dW = override
 
         # Collect user-provided c values (per-PM overrides take priority)
         c_fixed: dict[str, float] = {}
@@ -238,7 +236,6 @@ class Parametrization:
         self._warmup_steps = warmup_steps
         self._solve_interval = solve_interval
         self._sample_size = sample_size
-        self._norm_mode = norm_mode
         self._c_ema = c_ema
         self._step_count = 0
         self._graph = graph
@@ -250,7 +247,7 @@ class Parametrization:
         }
 
         # Set initial alignment on each PM from the preset, with overrides
-        alpha_val, omega_val, u_val = _ALIGNMENT_PRESETS[alignment]
+        a0_dW_val, dZ_w0_val, dZ_dW_val = _ALIGNMENT_PRESETS[alignment]
         self._alignment_pinned: set[str] = set()
         for name, pm in pms:
             # Check overrides: exact name > name suffix > layer_type
@@ -265,12 +262,12 @@ class Parametrization:
                     elif pm.layer_type in alignment_overrides:
                         override = alignment_overrides[pm.layer_type]
             if override is not None:
-                pm.alpha, pm.omega, pm.u = override
+                pm.align_z0_dW, pm.align_dZ_w0, pm.align_dZ_dW = override
                 self._alignment_pinned.add(name)
             else:
-                pm.alpha = alpha_val
-                pm.omega = omega_val
-                pm.u = u_val
+                pm.align_z0_dW = a0_dW_val
+                pm.align_dZ_w0 = dZ_w0_val
+                pm.align_dZ_dW = dZ_dW_val
 
     @property
     def param_groups(self) -> list[dict]:
@@ -391,8 +388,8 @@ class Parametrization:
             z0, w0 = pm._z0, pm._w0
             z = current[name]
             w = pm.weight.detach().clone()
-            pm.alpha, pm.omega, pm.u = compute_alignment(
-                z0, w0, z, w, fan_in=pm.width_dim, norm_mode=self._norm_mode
+            pm.align_z0_dW, pm.align_dZ_w0, pm.align_dZ_dW = compute_alignment(
+                z0, w0, z, w, fan_in=pm.width_dim
             )
 
         # 3. Re-solve LP (skip c update if infeasible with current alignment)
@@ -420,9 +417,9 @@ class Parametrization:
         for name, pm in self._pms:
             if name in self._graph.nodes:
                 node = self._graph.nodes[name]
-                node.alpha = pm.alpha
-                node.omega = pm.omega
-                node.u = pm.u
+                node.align_z0_dW = pm.align_z0_dW
+                node.align_dZ_w0 = pm.align_dZ_w0
+                node.align_dZ_dW = pm.align_dZ_dW
         return _solve_graph(self._graph, self._optimizer_type, c_fixed=self._c_fixed)
 
     # ------------------------------------------------------------------
@@ -440,7 +437,7 @@ class Parametrization:
         if preset is None:
             raise ValueError(f"Unknown alignment '{alignment}'. Supported: {list(_ALIGNMENT_PRESETS)}")
 
-        alpha_val, omega_val, u_val = preset
+        a0_dW_val, dZ_w0_val, dZ_dW_val = preset
 
         weighted = [(name, pm) for name, pm in pms if pm.weight is not None]
         nodes: dict[str, DagNode] = {}
@@ -457,7 +454,7 @@ class Parametrization:
                 width_dim=pm.width_dim,
                 predecessors=preds,
                 successors=succs,
-                alpha=alpha_val, omega=omega_val, u=u_val,
+                align_z0_dW=a0_dW_val, align_dZ_w0=dZ_w0_val, align_dZ_dW=dZ_dW_val,
             )
 
         return OpGraph(nodes)
@@ -471,13 +468,13 @@ class Parametrization:
         if preset is None:
             raise ValueError(f"Unknown alignment '{alignment}'. Supported: {list(_ALIGNMENT_PRESETS)}")
 
-        alpha_val, omega_val, u_val = preset
+        a0_dW_val, dZ_w0_val, dZ_dW_val = preset
 
         graph = trace_pm_dag(model, sample_input, ab=ab)
 
         for node in graph.nodes.values():
-            node.alpha = alpha_val
-            node.omega = omega_val
-            node.u = u_val
+            node.align_z0_dW = a0_dW_val
+            node.align_dZ_w0 = dZ_w0_val
+            node.align_dZ_dW = dZ_dW_val
 
         return graph

@@ -265,9 +265,9 @@ def train_maxp(
         for name, pm in param._pms:
             if pm.weight is not None:
                 layer_history[name].append({
-                    "alpha": pm.alpha,
-                    "omega": pm.omega,
-                    "u": pm.u,
+                    "align_z0_dW": pm.align_z0_dW,
+                    "align_dZ_w0": pm.align_dZ_w0,
+                    "align_dZ_dW": pm.align_dZ_dW,
                     "lr": next(
                         g["lr"] for g in param.param_groups
                         if g.get("layer_name") == name

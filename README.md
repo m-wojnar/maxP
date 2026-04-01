@@ -1,15 +1,20 @@
 # maxP
 
-**maxP** is a PyTorch learning rate scheduler that dynamically adjusts per-layer learning rates during training. It works by measuring the alignment between initial and current weights/activations, then solving a Linear Program (LP) to find optimal learning rate exponents that maximize training speed while maintaining numerical stability.
+**maxP** is a PyTorch library for neural network parametrization implementing the abc-parametrization framework from [Everett et al., 2024](https://arxiv.org/abs/2407.05872) with dynamic alignment measurement from [this blog post](https://iejmac.github.io/2025/03/26/alignments.html).
 
-For a detailed explanation of the theoretical foundations, see [this blog post](https://iejmac.github.io/2025/03/26/alignments.html).
+Each layer `l` has three exponents controlling its width-scaling behavior:
+- **`a_l`**: Output multiplier — layer output is scaled by `n^{-a_l}`
+- **`b_l`**: Init variance — weights initialized as `N(0, n^{-2b_l})`
+- **`c_l`**: Learning rate — `lr_l = lr_prefactor * n^{-c_l}`
+
+The library solves a Linear Program (LP) to find optimal `c_l` values that maximize per-layer learning rates while maintaining numerical stability. Optionally, it measures actual alignment between initial and current weights/activations during training and re-solves the LP dynamically.
 
 ## Installation
 
 ```bash
 git clone https://github.com/m-wojnar/maxP.git
 cd maxP
-pip install .
+pip install -e .
 ```
 
 ## Quick Start
@@ -17,379 +22,261 @@ pip install .
 ```python
 import torch
 import torch.nn as nn
-from maxp import MaxPScheduler, create_param_groups, initialize_abc_weights
+from maxp import ParametrizedModule, Parametrization
 
-# 1. Create your model
-model = nn.Sequential(
-    nn.Linear(784, 256),
-    nn.ReLU(),
-    nn.Linear(256, 256),
-    nn.ReLU(),
-    nn.Linear(256, 10),
-)
+# 1. Wrap layers you want parametrized
+class MLP(nn.Module):
+    def __init__(self, width):
+        super().__init__()
+        self.emb  = ParametrizedModule(nn.Linear(784, width, bias=False),
+                                       width_dim=width, layer_type="embedding")
+        self.fc1  = ParametrizedModule(nn.Linear(width, width, bias=False),
+                                       width_dim=width, layer_type="hidden")
+        self.head = ParametrizedModule(nn.Linear(width, 10, bias=False),
+                                       width_dim=width, layer_type="readout")
 
-# 2. Initialize weights with ABC parametrization
-initialize_abc_weights(model, parametrization="mup")
+    def forward(self, x):
+        return self.head(torch.relu(self.fc1(self.emb(x))))
 
-# 3. Create parameter groups with per-layer LRs
-lr_prefactor = 0.001
-param_groups = create_param_groups(
-    model,
-    lr_prefactor=lr_prefactor,
-    parametrization="mup",
-)
+model = MLP(width=256)
 
-# 4. Create optimizer and scheduler
-optimizer = torch.optim.AdamW(param_groups)
-scheduler = MaxPScheduler(
-    optimizer,
-    model,
-    parametrization="mup",
-    lr_prefactor=lr_prefactor,
-    solver_warmup_steps=100,
-)
+# 2. Apply parametrization (re-inits weights, solves LP, builds param groups)
+param = Parametrization(model, lr_prefactor=1e-3, alignment="full")
 
-# 5. Capture initial state BEFORE training
+# 3. Create optimizer from param_groups (each layer gets its own LR)
+optimizer = torch.optim.AdamW(param.param_groups)
+
+# 4. Capture initial state BEFORE training (needed for dynamic alignment)
 X_init = next(iter(train_loader))[0]
-scheduler.capture_initial(X_init)
+param.capture_initial(X_init)
 
-# 6. Training loop
+# 5. Training loop
 for X, y in train_loader:
     optimizer.zero_grad()
     loss = criterion(model(X), y)
     loss.backward()
     optimizer.step()
-    scheduler.step(X)  # Pass input for alignment computation
+    param.step(X, optimizer)  # measure alignment, re-solve LP, update LRs
 ```
 
-## Advanced Usage
+## Design Overview
 
-### Custom ABC Values
-
-Define custom exponents per layer instead of using a named parametrization:
-
-```python
-from maxp import initialize_abc_weights, create_param_groups, MaxPScheduler
-
-# Define custom exponents per layer
-al = [-0.5, 0.0, 0.0, 0.5]  # Layer output multipliers
-bl = [0.5, 0.5, 0.5, 0.5]   # Initialization variance exponents
-cl = [0.5, 1.0, 1.0, 0.5]   # Initial learning rate exponents
-
-initialize_abc_weights(model, al=al, bl=bl)
-param_groups = create_param_groups(model, lr_prefactor=0.1, cl=cl)
-optimizer = torch.optim.AdamW(param_groups)
-
-scheduler = MaxPScheduler(
-    optimizer, model,
-    al=al, bl=bl,
-    lr_prefactor=0.1,
-)
+```
+maxp/
+├── module.py          # ParametrizedModule — marks layers for parametrization
+├── parametrization.py # Parametrization — main entry point, Phase 1 + 2
+├── alignment.py       # compute_alignment() — measures align_z0_dW, align_dZ_w0, align_dZ_dW
+├── solver.py          # LP solver (Adam + SGD) — finds optimal c values
+├── dag.py             # DAG builder — traces PM-to-PM data flow
+├── trace.py           # Operation tracer — records matmul-like ops
+└── diagnose.py        # Coord-check diagnostics — sweep widths, plot scaling
 ```
 
-### Memory-Efficient Mode
+**Phase 1** (static, at init): discover PMs → reinit weights → solve LP → build param groups.
 
-Avoid storing initial weights by resampling them when needed:
+**Phase 2** (dynamic, per step): capture activations → measure alignment → re-solve LP → update per-layer LRs.
+
+
+## ParametrizedModule
+
+`ParametrizedModule` marks a layer for abc-parametrization. It wraps any `nn.Module` (or bare callable for parameter-free ops):
 
 ```python
-scheduler = MaxPScheduler(
-    optimizer, model,
-    parametrization="mup",
-    lr_prefactor=0.001,
-    resample_w0=True,  # Don't store initial weights
-)
+# Standard linear layer
+fc = ParametrizedModule(nn.Linear(n, n), width_dim=n, layer_type="hidden")
+
+# Embedding layer
+emb = ParametrizedModule(nn.Embedding(vocab, n), width_dim=n, layer_type="embedding")
+
+# Attention QK^T — parameter-free, but needs its own scaling
+qk = ParametrizedModule(lambda q, k: q @ k.T, width_dim=n // n_heads, layer_type="readout")
+
+# Override any of (a, b, c) per layer
+custom = ParametrizedModule(nn.Linear(n, n), width_dim=n, layer_type="hidden", a=0.0, b=0.5, c=1.5)
 ```
 
-### Feature Learning Constraint
+**Layer types and default (a, b) under muP:**
 
-Enforce the `r_{L-1} = 0` constraint in the LP:
+| `layer_type` | `a`    | `b`   | `a+b` | Role                    |
+|--------------|--------|-------|-------|-------------------------|
+| `"embedding"`| `-0.5` | `0.5` | `0.0` | Source (input embedding)|
+| `"hidden"`   | `0.0`  | `0.5` | `0.5` | Interior hidden layers  |
+| `"readout"`  | `0.5`  | `0.5` | `1.0` | Final output (logits)   |
+
+## Parametrization
+
+`Parametrization` is the main entry point. At construction it:
+1. Discovers all `ParametrizedModule` instances in the model
+2. Re-initializes their weights: `std = std_prefactor * width_dim^{-b}`
+3. Sets output scales: `pm.scale = width_dim^{-a}`
+4. Solves the LP to find per-layer `c` values
+5. Builds `param_groups` with per-layer learning rates
 
 ```python
-optimizer = torch.optim.SGD(param_groups, lr=0.1)
-scheduler = MaxPScheduler(
-    optimizer, model,
-    parametrization="ntk",
-    lr_prefactor=0.1,
-    feature_learning=True,
+param = Parametrization(
+    model,
+    optimizer_type="adam",       # "adam" or "sgd" — needed for LP formulation
+    alignment="full",            # "full" (worst-case) or "no" (no alignment)
+    lr_prefactor=1e-3,           # base learning rate multiplier
+    std_prefactor=1.0,           # weight init multiplier
+    ab_overrides=None,           # dict: layer_type -> (a, b) to override defaults
+    c_overrides=None,            # dict: layer_type -> c to pin c per layer type
+    alignment_overrides=None,    # dict: name/suffix/type -> (align_z0_dW, align_dZ_w0, align_dZ_dW)
+    sample_input=None,           # provide to trace actual data-flow DAG
+    warmup_steps=0,              # steps before first dynamic LP re-solve
+    solve_interval=1,            # re-solve every N steps
+    sample_size=32,              # max batch size for alignment measurement
+    c_ema=0.0,                   # EMA smoothing for c values (0 = instant)
 )
+
+# Param groups for optimizer
+optimizer = torch.optim.AdamW(param.param_groups)
 ```
 
-### Solve Interval
+### Alignment presets
 
-Reduce LP solving frequency for faster training:
+The `alignment` argument controls the initial assumption about how correlated weights and activations are:
+
+- `"full"` (default): worst-case assumption — assumes maximum alignment. Leads to smaller initial LRs that are safe regardless of actual alignment.
+- `"no"`: assumes no alignment — leads to larger initial LRs, appropriate when you expect random-like behavior.
+
+### DAG-based LP solving
+
+By default, maxP builds a synthetic linear-chain graph from the order PMs are discovered. If you pass `sample_input`, it traces the actual data-flow graph:
 
 ```python
-scheduler = MaxPScheduler(
-    optimizer, model,
-    parametrization="mup",
-    lr_prefactor=0.001,
-    solver_warmup_steps=100,
-    solve_interval=10,  # Solve LP every 10 steps
-)
+X_sample = torch.randn(1, 784)
+param = Parametrization(model, sample_input=X_sample, lr_prefactor=1e-3)
 ```
 
-### WSD (Warmup-Stable-Decay) Schedule
+This enables per-op `c` values for non-linear topologies (residuals, attention, SwiGLU, etc.) where different paths through the network can have different optimal learning rates.
 
-Built-in support for WSD learning rate schedules with independent LR warmup and LP solver warmup. During the decay phase, the LP solver stops and per-layer LRs are frozen at their last computed values.
+## Dynamic Alignment (Phase 2)
 
-```python
-scheduler = MaxPScheduler(
-    optimizer, model,
-    parametrization="mup",
-    lr_prefactor=0.001,
-    solver_warmup_steps=100,       # LP solver starts after 100 steps
-    wsd_warmup_steps=500,          # Linear LR warmup: 500 steps
-    wsd_stable_steps=9000,         # Stable LR phase: 9000 steps
-    wsd_decay_steps=500,           # Decay phase: 500 steps
-    wsd_decay_type="cosine",       # "cosine" or "linear"
-    wsd_min_factor=0.0,            # Decay to 0% of base LR
-)
+After a few training steps, the actual alignment between initial weights/activations and their updates can differ significantly from the preset. Dynamic alignment measures this and re-solves the LP to track the true optimal LRs.
+
+### Alignment metrics
+
+For each layer computing `y = z @ W^T`, maxP decomposes the output into four terms:
+
+```
+y = z0 @ W0^T + z0 @ dW^T + dZ @ W0^T + dZ @ dW^T
 ```
 
-The WSD schedule consists of three phases:
+And measures three alignment metrics (how efficiently each term scales with width):
 
-1. **Warmup** (`wsd_warmup_steps`): Linear ramp from `wsd_min_factor × lr` to `lr`
-2. **Stable** (`wsd_stable_steps`): Constant learning rate, LP solver actively adjusts per-layer LRs
-3. **Decay** (`wsd_decay_steps`): LP solver stops, frozen per-layer LRs decay from `lr` to `wsd_min_factor × lr`
+| Metric         | Measures                         | Preset `"full"` | Preset `"no"`  |
+|----------------|----------------------------------|-----------------|----------------|
+| `align_z0_dW`  | alignment of `z0 @ dW^T` term    | `1.0`           | `0.5`          |
+| `align_dZ_w0`  | alignment of `dZ @ W0^T` term    | `0.5`           | `0.5`          |
+| `align_dZ_dW`  | alignment of `dZ @ dW^T` term    | `1.0`           | `0.5`          |
 
-WSD is disabled by default (`wsd_decay_type="none"`). When enabled, both `wsd_stable_steps` and `wsd_decay_steps` are required.
+These are log-scale RMS alignment values. A value of `1.0` means fully aligned (outputs scale as if vectors were parallel); `0.5` means random (outputs scale as sqrt(fan_in)); values close to `0.0` mean anti-aligned.
 
-### Chaining with Other LR Schedulers
-
-Combine MaxPScheduler with standard PyTorch learning rate schedulers (e.g., cosine annealing, linear warmup) using `ChainedMaxPScheduler`:
+### Training loop with dynamic alignment
 
 ```python
-from maxp import MaxPScheduler, ChainedMaxPScheduler, create_param_groups, initialize_abc_weights
+param = Parametrization(model, lr_prefactor=1e-3, warmup_steps=100, solve_interval=10)
+optimizer = torch.optim.AdamW(param.param_groups)
 
-# Create MaxP scheduler
-maxp_scheduler = MaxPScheduler(
-    optimizer, model,
-    parametrization="mup",
-    lr_prefactor=0.1,
-    solver_warmup_steps=100,
-)
+# Required: capture initial (z0, W0) snapshots before training
+param.capture_initial(X_init)
 
-# Create standard PyTorch schedulers
-cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000)
-
-# Chain them together
-scheduler = ChainedMaxPScheduler(maxp_scheduler, [cosine_scheduler])
-
-# Use like MaxPScheduler
-scheduler.capture_initial(X_init)
-for X, y in train_loader:
+for step, (X, y) in enumerate(train_loader):
     optimizer.zero_grad()
     loss = criterion(model(X), y)
     loss.backward()
     optimizer.step()
-    scheduler.step(X)
+
+    # After optimizer.step(): measure alignment, re-solve, update LRs
+    param.step(X, optimizer)
 ```
 
-The chained scheduler works by:
+`param.step()` does nothing during the first `warmup_steps` steps and only re-solves every `solve_interval` steps to reduce overhead.
 
-1. Letting the external schedulers control the global base learning rate
-2. MaxPScheduler handles per-layer LR ratios based on alignment measurements
-3. On each step, the relative LR change from external schedulers is applied to MaxP's `lr_prefactor`
+### Pinning alignment per layer
 
-You can chain multiple schedulers together:
+Override alignment for specific layers (they skip dynamic measurement):
 
 ```python
-# Warmup + cosine decay
-warmup = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.1, total_iters=100)
-cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000)
-scheduler = ChainedMaxPScheduler(maxp_scheduler, [warmup, cosine])
+param = Parametrization(
+    model,
+    alignment_overrides={
+        "head":    (1.0, 0.5, 1.0),   # pin by exact name
+        "fc":      (0.8, 0.5, 0.8),   # pin by name suffix (matches "blocks.0.ff.fc")
+        "hidden":  (0.5, 0.5, 0.5),   # pin by layer_type
+    },
+)
 ```
 
-### Checkpointing
+### Adjusting lr_prefactor externally
 
-Save and restore scheduler state:
+`param.step()` always recomputes LRs from `param.lr_prefactor * width^{-c}`, so you can apply a global LR schedule by updating `lr_prefactor`:
 
 ```python
-# Save
-checkpoint = {
-    "model": model.state_dict(),
-    "optimizer": optimizer.state_dict(),
-    "scheduler": scheduler.state_dict(),
-}
-torch.save(checkpoint, "checkpoint.pt")
-
-# Load
-checkpoint = torch.load("checkpoint.pt")
-model.load_state_dict(checkpoint["model"])
-optimizer.load_state_dict(checkpoint["optimizer"])
-scheduler.load_state_dict(checkpoint["scheduler"])
+for step, (X, y) in enumerate(train_loader):
+    # ... training step ...
+    param.lr_prefactor = base_lr * lr_schedule(step)
+    param.step(X, optimizer)
 ```
 
-### Accessing Scheduler State
+## Annotating a Model
+
+### Choosing `layer_type`
+
+The type determines the default `(a, b)` exponents and the role the layer plays in the LP graph. The key distinction is which dimensions scale with model width `n`:
+
+- **`"embedding"`**: fan-in is **fixed** (does not scale with `n`), fan-out scales with `n`. Any projection from a fixed-size input space into the hidden dimension qualifies — token embeddings, positional embeddings, patch projections, etc. There can be multiple.
+- **`"hidden"`**: both fan-in and fan-out scale with `n`. All weight matrices that live entirely within the hidden space: Q/K/V projections, attention output projection, FFN up/gate/down layers.
+- **`"readout"`**: fan-in scales with `n`, fan-out is **fixed**. This includes the final unembedding layer, but also attention's QK^T product (which is a readout wrt sequence length — `d_head` scales with `n`, the sequence dimension does not). There can be multiple.
+
+When in doubt: look at which dimensions of the weight matrix scale with model width. Fixed-in → `"embedding"`, fixed-out → `"readout"`, both scale → `"hidden"`.
+
+### Choosing `width_dim`
+
+`width_dim` is the fan-in of the operation — the dimension that is being contracted (summed over) in the matrix multiply, and the one that scales with model width. This is what sets `n` in the scaling exponents `n^{-a}`, `n^{-b}`, `n^{-c}`.
+
+### Verifying with coordinate checks
+
+After annotating your model, run a coordinate check to confirm that activation magnitudes are stable across widths before committing to a training run:
 
 ```python
-# Get current learning rates per layer
-lrs = scheduler.get_last_lr()
+from maxp import diagnose_axis, print_axis, plot_axis
 
-# Get alignment values (alpha, omega, u)
-alpha, omega, u = scheduler.get_alignment()
+widths = [64, 128, 256, 512]
 
-# Get layer names
-layer_names = scheduler.get_layer_names()
+def make_model(width):
+    model = MyModel(width)
+    param = Parametrization(model, lr_prefactor=1e-3)
+    return model, param.param_groups
+
+def make_input(width):
+    return torch.randint(0, vocab_size, (4, seq_len))
+
+all_ops, affected, act_stats = diagnose_axis(make_model, make_input, widths)
+print_axis(all_ops, affected, act_stats, widths)
+plot_axis(all_ops, affected, act_stats, widths, path="coord_check.png")
 ```
 
-## Running Training Examples
+`print_axis` shows how the RMS of each op's output scales with width. For a correctly parametrized model, activations should be roughly **constant** (slope ≈ 0 in log-log) at init and remain stable after a few training steps.
 
-The `examples/` directory contains complete training scripts for MLP and ViT models on CIFAR-10.
+If an activation grows with width, `a` is too small for that layer — increase it. If it shrinks, `a` is too large. Adjust per-layer with the `a` override on `ParametrizedModule` and re-run until all slopes are near zero.
 
-### MLP Training
+## Examples
+
+The `examples/` directory contains training scripts. To run the nanoGPT example:
 
 ```bash
-cd examples/mlp_training
-
-# Train with maxP scheduler
-python train.py --config config.yaml
-
-# Train baseline (without maxP)
-python train.py --config config_baseline.yaml
+source .venv/bin/activate
+cd examples/nanogpt_example
+python train.py
 ```
 
-### ViT Training
+## Running Tests
 
 ```bash
-cd examples/vit_training
-
-# Train with maxP scheduler
-python train.py --config config.yaml
-
-# Train baseline
-python train.py --config config_baseline.yaml
+source .venv/bin/activate
+python -m pytest tests/ -v --tb=short
 ```
 
-### Configuration
-
-The config files control all training parameters. Key sections in `config.yaml`:
-
-```yaml
-model:
-  input_dim: 3072
-  hidden_dim: 512
-  n_layers: 4
-  output_dim: 10
-
-optimizer:
-  type: "adam"
-  lr_prefactor: 0.001
-
-maxp:
-  use_maxp: true
-  parametrization: "sp"
-  alignment: "full"
-  warmup_steps: 100
-  solve_interval: 1
-  alignment_norm: "rms"
-
-logging:
-  output_dir: "outputs/mlp_maxp"
-```
-
-Set `maxp.use_maxp: false` to disable the scheduler (as in `config_baseline.yaml`).
-
-## Running Hyperparameter Sweeps
-
-The sweep system allows you to run grid searches over hyperparameters with parallel workers.
-
-### Sweep Configuration
-
-Define your parameter grid in `sweep_config.yaml`:
-
-```yaml
-base_config: "config.yaml"
-output_base: "outputs/mlp_sweep"
-experiment_name: "mlp_lr_width_sweep"
-
-# Parameter grids - all combinations will be explored
-sweep:
-  optimizer.lr_prefactor:
-    - 0.3
-    - 0.1
-    - 0.03
-    - 0.01
-    - 0.003
-    - 0.001
-
-  model.hidden_dim:
-    - 64
-    - 128
-    - 256
-
-  model.n_layers:
-    - 3
-    - 4
-    - 5
-
-# Fixed overrides applied to all runs
-overrides:
-  n_steps: 2000
-```
-
-### Running Sweeps
-
-```bash
-cd examples/mlp_training
-
-# Preview all configurations (dry run)
-python sweep.py --config sweep_config.yaml --dry-run
-
-# Run with a single worker
-python sweep.py --config sweep_config.yaml
-
-# Run with multiple parallel workers (4 GPUs)
-./run_sweep.sh 4 sweep_config.yaml
-```
-
-The parallel runner (`run_sweep.sh`) automatically:
-- Distributes jobs across available GPUs
-- Sets thread limits to avoid oversubscription
-- Handles graceful termination with Ctrl+C
-
-## Visualizing Results
-
-The `examples/visualize.py` script provides flexible visualization of training results.
-
-### Basic Usage
-
-```bash
-cd examples
-
-# Compare maxP vs baseline experiments
-python visualize.py \
-    --exp maxp=mlp_training/outputs/mlp_sweep \
-    --exp baseline=mlp_training/outputs/mlp_baseline \
-    --metric train_loss \
-    --output plots/comparison.png
-```
-
-### Grouping and Selection
-
-When you have multiple runs (e.g., from a sweep), the script groups them by configurable features and selects the best run from each group:
-
-```bash
-python visualize.py \
-    --exp maxp=mlp_training/outputs/mlp_sweep \
-    --group-by model.hidden_dim model.n_layers \
-    --select-by loss \
-    --metric train_loss \
-    --smoothing 0.1 \
-    --output plots/grid.png
-```
-
-### Available Options
-
-| Option | Description |
-|--------|-------------|
-| `--exp name=path` | Add experiment (can be repeated) |
-| `--group-by` | Config keys to group runs by (default: `model.hidden_dim model.n_layers`) |
-| `--select-by` | How to select best run: `loss` or `accuracy` |
-| `--metric` | Metric to plot: `train_loss`, `train_acc`, `test_loss`, `test_acc`, `lr_0`, `alpha_0`, `omega_0`, `u_0` |
-| `--smoothing` | EMA smoothing alpha (lower = smoother, default: 0.05) |
-| `--log-scale` | Use log scale for y-axis |
-| `--single` | Create single plot instead of grid |
-| `--per-layer` | Plot per-layer metrics: `lr`, `alpha`, `omega`, or `u` |
-| `--output` | Output file path |
-| `--title` | Custom plot title |
+Tests run on CPU only (no GPU required). The suite covers LP solver correctness (analytical values, optimality, perturbation tests), DAG tracing and merge detection, alignment computation, and end-to-end parametrization + dynamic step behavior.

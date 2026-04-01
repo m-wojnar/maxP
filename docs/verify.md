@@ -40,7 +40,7 @@ with 6 diagnostic visualizations.
 ## 1. LP Solver — Known Parametrization Recovery
 
 **What we're testing:** The LP solver `find_c()` takes per-layer `(a, b)` and
-alignment `(alpha, omega, u)` and returns optimal `c` values. We verify it
+alignment `(align_z0_dW, align_dZ_w0, align_dZ_dW)` and returns optimal `c` values. We verify it
 recovers known results from the literature.
 
 **Theory:** For the abc-parametrization (Everett et al., 2024), with the default
@@ -52,10 +52,10 @@ muP `(a, b)` values:
 | hidden    |  0.0 | 0.5 | 0.5 |
 | readout   |  0.5 | 0.5 | 1.0 |
 
-Under **full alignment** (alpha=1, omega=0.5, u=1), the solver should return
+Under **full alignment** (align_z0_dW=1, align_dZ_w0=0.5, align_dZ_dW=1), the solver should return
 the muP learning rate exponents: `c = [0.5, 1.0, 0.5]`.
 
-Under **no alignment** (alpha=0.5, omega=0.5, u=0.5), the solver can use more
+Under **no alignment** (align_z0_dW=0.5, align_dZ_w0=0.5, align_dZ_dW=0.5), the solver can use more
 relaxed LRs: `c = [0.5, 0.5, 0.0]`. The embedding c stays at 0.5, but hidden
 and readout c values drop because the cross-terms in the output decomposition
 are assumed to only partially align.
@@ -63,11 +63,11 @@ are assumed to only partially align.
 **Proof (from verify.py output):**
 
 ```
-Full alignment (alpha=1, omega=0.5, u=1) → expected muP:
+Full alignment (align_z0_dW=1, align_dZ_w0=0.5, align_dZ_dW=1) → expected muP:
   Solved c:  ['0.5000', '1.0000', '0.5000']     ← matches muP exactly
   Solved r:  ['0.0000', '0.0000', '0.0000']     ← all residuals zero (tight)
 
-No alignment (alpha=0.5, omega=0.5, u=0.5):
+No alignment (align_z0_dW=0.5, align_dZ_w0=0.5, align_dZ_dW=0.5):
   Solved c:  ['0.5000', '0.5000', '0.0000']     ← more relaxed LRs
   Solved r:  ['0.0000', '0.0000', '0.0000']     ← still stable
 
@@ -107,7 +107,7 @@ r[1] = min(a[1]+c[1]-alpha, a[1]+c[1]+r[0]-u, 0.5+r[0]-omega)
 r[2] = min(a[2]+b[2]+r[1]-omega, a[2]+c[2]-alpha, a[2]+c[2]+r[1]-u)
 ```
 
-For the muP solution with full alignment (alpha=1, omega=0.5, u=1):
+For the muP solution with full alignment (align_z0_dW=1, align_dZ_w0=0.5, align_dZ_dW=1):
 
 **Proof (manual computation):**
 
@@ -201,7 +201,7 @@ alpha = [rng.uniform(0.5, 1.0) for _ in range(n)]
 omega = [rng.uniform(0.0, 0.5) for _ in range(n)]
 u     = [rng.uniform(0.5, 1.0) for _ in range(n)]
 
-cl, rl = find_c(al, bl, alpha, omega, u, optimizer_type="adam")
+cl, rl = find_c(al, bl, align_z0_dW, align_dZ_w0, align_dZ_dW, optimizer_type="adam")
 assert all(r >= -1e-9 for r in rl)
 ```
 
@@ -222,7 +222,7 @@ valid chain input, both implementations must agree.
 **Method:** 100 random trials with:
 - **3–20 layers**, alternating Adam and SGD
 - **Random `(a, b)`** satisfying stability-at-init (same generation as section 4)
-- **Random alignment** in `[0.5, 1.0]` for alpha, omega, u
+- **Random alignment** in `[0.5, 1.0]` for align_z0_dW, align_dZ_w0, align_dZ_dW
 - Both solvers called with identical inputs; `c` and `r` values compared
   with tolerance `1e-4`
 
@@ -274,7 +274,7 @@ instances and callable functions, provides `.weight`, `.inner`, `.width_dim`,
 | `pm.width_dim` | Stores the width | Yes |
 | `pm.layer_type` | Stores "hidden"/"embedding"/"readout" | Yes |
 | `pm.scale` | Defaults to 1.0 | Yes |
-| `pm.alpha/omega/u` | Default to None | Yes |
+| `pm.align_z0_dW/omega/u` | Default to None | Yes |
 | `pm._z0/_w0` | Default to None | Yes |
 | Forward with scale=2 | Output is 2x unscaled | Yes |
 | Callable wrapping | `inner=None`, `weight=None`, forward works | Yes |
@@ -314,7 +314,7 @@ Learning rates (lr = 0.01 * d^{-c}):
   head   c=0.50  lr=0.000884
 
 Alignment preset (all PMs):
-  alpha=1.0, omega=0.5, u=1.0  ← "full" alignment written to each PM
+  align_z0_dW=1.0, align_dZ_w0=0.5, align_dZ_dW=1.0  ← "full" alignment written to each PM
 ```
 
 **Why scale matters:** The scale compensates for the width-dependent behavior
@@ -342,7 +342,7 @@ Uniform alignment (all "full") — 5-layer chain:
 
 Non-uniform alignment (different alpha/omega/u per hidden layer):
   h0: alpha=0.8, omega=0.3, u=0.6
-  h1: alpha=1.0, omega=0.5, u=1.0  (full)
+  h1: align_z0_dW=1.0, align_dZ_w0=0.5, align_dZ_dW=1.0  (full)
   h2: alpha=0.5, omega=0.2, u=0.3
 
   c = {emb: 0.5, h0: 0.8, h1: 1.0, h2: 0.5, head: 0.5}

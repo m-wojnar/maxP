@@ -256,10 +256,10 @@ class TestDagSolver:
         # Solve with flat solver (same a,b ordering)
         al = [-0.5, 0.0, 0.5]
         bl = [0.5, 0.5, 0.5]
-        alpha = [1.0, 1.0, 1.0]
-        omega = [0.5, 0.5, 0.5]
-        u = [1.0, 1.0, 1.0]
-        flat_cl, flat_rl = find_c_adam_chain(al, bl, alpha, omega, u)
+        align_z0_dW = [1.0, 1.0, 1.0]
+        align_dZ_w0 = [0.5, 0.5, 0.5]
+        align_dZ_dW = [1.0, 1.0, 1.0]
+        flat_cl, flat_rl = find_c_adam_chain(al, bl, align_z0_dW, align_dZ_w0, align_dZ_dW)
 
         # Compare c values
         dag_cl = [dag_result["emb"][0], dag_result["hidden"][0], dag_result["head"][0]]

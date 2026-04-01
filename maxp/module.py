@@ -31,9 +31,9 @@ class ParametrizedModule(nn.Module):
         inner: The wrapped ``nn.Module``, or ``None`` for bare callables.
         scale: Output multiplier, set to ``width_dim ** (-a)`` by
             :class:`Parametrization`.
-        alpha: Alignment of the z_0 @ dw^T term, or ``None`` before parametrization.
-        omega: Alignment of the dz @ w_0^T term, or ``None`` before parametrization.
-        u: Alignment of the dz @ dw^T cross term, or ``None`` before parametrization.
+        align_z0_dW: Alignment of the z0 @ dW^T term, or ``None`` before parametrization.
+        align_dZ_w0: Alignment of the dZ @ W0^T term, or ``None`` before parametrization.
+        align_dZ_dW: Alignment of the dZ @ dW^T cross term, or ``None`` before parametrization.
     """
 
     def __init__(
@@ -62,9 +62,9 @@ class ParametrizedModule(nn.Module):
         self.c: float | None = c
 
         # Alignment (set by Parametrization from preset or measurement)
-        self.alpha: float | None = None
-        self.omega: float | None = None
-        self.u: float | None = None
+        self.align_z0_dW: float | None = None   # alignment of z0 @ dW^T term
+        self.align_dZ_w0: float | None = None   # alignment of dZ @ W0^T term
+        self.align_dZ_dW: float | None = None   # alignment of dZ @ dW^T term
         # Initial snapshot for alignment measurement
         self._z0: torch.Tensor | None = None
         self._w0: torch.Tensor | None = None
