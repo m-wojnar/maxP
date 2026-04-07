@@ -533,7 +533,9 @@ class Parametrization:
                 node.u = pm.u
 
         if self._solver is None:
-            self._solver = plp.PULP_CBC_CMD(msg=False)
+            # Enable warm start when solves are infrequent (worth the I/O)
+            use_warm = self._solve_interval > 1
+            self._solver = plp.PULP_CBC_CMD(msg=False, warmStart=use_warm)
 
         c_by_name = _solve_graph(
             self._graph, self._optimizer_type,
