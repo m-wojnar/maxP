@@ -79,9 +79,9 @@ MAXP_DEFAULTS = dict(
 NO_ALIGN = (0.5, 0.5, 0.5)
 
 RUNS = [
-    # 1. maxP baseline (default settings: solve_interval=100)
+    # 1. maxP baseline (solve_interval=10, no other optimizations)
     ("maxP", 0.03, 5000,
-     {},
+     {"solve_interval": 10},
      "maxP (baseline)"),
 
     # 2. + alignment_ema=0.7
