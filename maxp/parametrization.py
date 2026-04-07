@@ -533,7 +533,7 @@ class Parametrization:
                 node.u = pm.u
 
         if self._solver is None:
-            self._solver = plp.PULP_CBC_CMD(msg=False, warmStart=True)
+            self._solver = plp.PULP_CBC_CMD(msg=False)
 
         c_by_name = _solve_graph(
             self._graph, self._optimizer_type,
