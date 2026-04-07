@@ -117,6 +117,10 @@ class Parametrization:
             ``PULP_CBC_CMD(msg=False)``.  Pass any PuLP solver, e.g.
             ``pulp.CPLEX_CMD(msg=False, warmStart=True)`` for CPLEX.
             The solver is reused across dynamic re-solves.
+        warm_start: If True, enable LP warm start — seeds LP variables
+            with the previous solution and configures the default CBC
+            solver with ``warmStart=True``.  Ignored when a custom
+            ``solver`` is provided (configure warm start on it directly).
     """
 
     def __init__(
@@ -141,6 +145,7 @@ class Parametrization:
         resample_w0: bool = False,
         use_training_activations: bool = False,
         solver: "plp.LpSolver | None" = None,
+        warm_start: bool = False,
     ):
         self.model = model
         self.lr_prefactor = lr_prefactor
@@ -278,6 +283,7 @@ class Parametrization:
         self._c_ema = c_ema
         self._alignment_ema = alignment_ema
         self._resample_w0 = resample_w0
+        self._warm_start = warm_start
         self._use_training_activations = use_training_activations
         self._persistent_hooks: list[torch.utils.hooks.RemovableHook] = []
         self._latest_activations: dict[str, torch.Tensor] = {}
@@ -533,14 +539,12 @@ class Parametrization:
                 node.u = pm.u
 
         if self._solver is None:
-            # Enable warm start when solves are infrequent (worth the I/O)
-            use_warm = self._solve_interval > 1
-            self._solver = plp.PULP_CBC_CMD(msg=False, warmStart=use_warm)
+            self._solver = plp.PULP_CBC_CMD(msg=False, warmStart=self._warm_start)
 
         c_by_name = _solve_graph(
             self._graph, self._optimizer_type,
             c_fixed=self._c_fixed,
-            c_prev=self._c_prev,
+            c_prev=self._c_prev if self._warm_start else None,
             solver=self._solver,
         )
         self._c_prev = dict(c_by_name)

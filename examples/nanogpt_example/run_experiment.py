@@ -59,6 +59,7 @@ MAXP_DEFAULTS = dict(
     alignment_ema=0.0,
     resample_w0=False,
     use_training_activations=False,
+    warm_start=False,
 )
 
 # ── Define your runs ──────────────────────────────────────────────────────
@@ -78,40 +79,41 @@ MAXP_DEFAULTS = dict(
 NO_ALIGN = (0.5, 0.5, 0.5)
 
 RUNS = [
-    # 1. maxP baseline (no optimizations, solve every step)
+    # 1. maxP baseline (default settings: solve_interval=100)
     ("maxP", 0.03, 5000,
-     {"solve_interval": 1},
+     {},
      "maxP (baseline)"),
 
-    # 2. + solve_interval=10
+    # 2. + alignment_ema=0.7
     ("maxP", 0.03, 5000,
-     {"solve_interval": 10},
-     "maxP (+interval=10)"),
-
-    # 3. + alignment_ema=0.7
-    ("maxP", 0.03, 5000,
-     {"solve_interval": 1, "alignment_ema": 0.7},
+     {"alignment_ema": 0.7},
      "maxP (+align_ema)"),
 
-    # 4. + c_ema=0.5
+    # 3. + c_ema=0.5
     ("maxP", 0.03, 5000,
-     {"solve_interval": 1, "c_ema": 0.5},
+     {"c_ema": 0.5},
      "maxP (+c_ema)"),
 
-    # 5. + resample_w0
+    # 4. + resample_w0
     ("maxP", 0.03, 5000,
-     {"solve_interval": 1, "resample_w0": True},
+     {"resample_w0": True},
      "maxP (+resample_w0)"),
 
-    # 6. + use_training_activations
+    # 5. + use_training_activations
     ("maxP", 0.03, 5000,
-     {"solve_interval": 1, "use_training_activations": True},
+     {"use_training_activations": True},
      "maxP (+train_act)"),
+
+    # 6. + warm_start
+    ("maxP", 0.03, 5000,
+     {"warm_start": True},
+     "maxP (+warm_start)"),
 
     # 7. All optimizations combined
     ("maxP", 0.03, 5000,
-     {"solve_interval": 10, "alignment_ema": 0.7, "c_ema": 0.3,
-      "resample_w0": True, "use_training_activations": True},
+     {"alignment_ema": 0.7, "c_ema": 0.3,
+      "resample_w0": True, "use_training_activations": True,
+      "warm_start": True},
      "maxP (all opts)"),
 
     # 8. muP no-align reference

@@ -227,7 +227,7 @@ def train_maxp(
     warmup, decay, alignment_warmup, solve_interval, sample_size, c_ema,
     alignment_overrides=None, norm_mode="rms", method_name="maxP",
     alignment_ema=0.0, resample_w0=False, use_training_activations=False,
-    device=None,
+    warm_start=False, device=None,
 ) -> RunResult:
     """maxP with WSD schedule (dynamic alignment)."""
     device = device or data.device
@@ -248,6 +248,7 @@ def train_maxp(
         alignment_ema=alignment_ema,
         resample_w0=resample_w0,
         use_training_activations=use_training_activations,
+        warm_start=warm_start,
         sample_input=sample_input,
     )
     optimizer = torch.optim.AdamW(param.param_groups, lr=lr)

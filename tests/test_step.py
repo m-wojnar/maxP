@@ -799,6 +799,45 @@ class TestWarmStartLP:
             if g.get("maxp_managed"):
                 assert g["lr"] > 0
 
+    def test_warm_start_flag_default_off(self):
+        """By default warm_start is False."""
+        model, param, optimizer, X = _setup()
+        assert param._warm_start is False
+
+    def test_warm_start_flag_on(self):
+        """warm_start=True enables warm start on the default solver."""
+        model, param, optimizer, X = _setup(warm_start=True)
+        assert param._warm_start is True
+        param.capture_initial(X)
+
+        for _ in range(5):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+
+        param.step(X, optimizer)
+
+        for g in param.param_groups:
+            if g.get("maxp_managed"):
+                assert g["lr"] > 0
+
+    def test_warm_start_produces_same_result(self):
+        """warm_start=True produces the same c values as without."""
+        torch.manual_seed(0)
+        model_a = SimpleMLP(d=32)
+        torch.manual_seed(0)
+        model_b = SimpleMLP(d=32)
+
+        param_a = Parametrization(model_a, lr_prefactor=0.01, warm_start=False)
+        param_b = Parametrization(model_b, lr_prefactor=0.01, warm_start=True)
+
+        managed_a = {g["layer_name"]: g["c"] for g in param_a.param_groups if g.get("maxp_managed")}
+        managed_b = {g["layer_name"]: g["c"] for g in param_b.param_groups if g.get("maxp_managed")}
+
+        for name in managed_a:
+            assert abs(managed_a[name] - managed_b[name]) < 1e-6, f"{name}: c mismatch"
+
 
 # ---------------------------------------------------------------------------
 # Tests for piggyback on training forward pass
