@@ -56,6 +56,9 @@ MAXP_DEFAULTS = dict(
     solve_interval=100,
     sample_size=8,
     c_ema=0.0,
+    alignment_ema=0.0,
+    resample_w0=False,
+    use_training_activations=False,
 )
 
 # ── Define your runs ──────────────────────────────────────────────────────
@@ -64,21 +67,59 @@ MAXP_DEFAULTS = dict(
 # method: "maxP", "muP", "muP (no-align)"
 # extra_kwargs: only needed for maxP (overrides MAXP_DEFAULTS)
 # display_name: optional label for plots/summary (defaults to method)
+#
+# Optimization parameters for maxP:
+#   solve_interval:            re-solve LP every N steps (default 100)
+#   alignment_ema:             EMA on alignment measurements (default 0.0)
+#   c_ema:                     EMA on c values (default 0.0)
+#   resample_w0:               regenerate W0 from seed (default False)
+#   use_training_activations:  piggyback on training forward pass (default False)
 
 NO_ALIGN = (0.5, 0.5, 0.5)
 
 RUNS = [
-    ("maxP",           0.03, 5000, {}),
-    ("maxP",           0.03, 5000, {"norm_mode": "spectral"}, "maxP (spectral)"),
-    ("maxP",           0.01, 5000, {"norm_mode": "spectral"}, "maxP (spectral)"),
-    ("maxP",           0.03, 5000, {"alignment_overrides": {"fc2": NO_ALIGN}}, "maxP (fc2-noalign)"),
-    ("maxP",           0.01, 5000, {"alignment_overrides": {"fc2": NO_ALIGN}}, "maxP (fc2-noalign)"),
-    ("muP (no-align)", 0.01, 5000, {}),
-    ("muP",            0.01, 5000, {}),
+    # 1. maxP baseline (no optimizations, solve every step)
+    ("maxP", 0.03, 5000,
+     {"solve_interval": 1},
+     "maxP (baseline)"),
+
+    # 2. + solve_interval=10
+    ("maxP", 0.03, 5000,
+     {"solve_interval": 10},
+     "maxP (+interval=10)"),
+
+    # 3. + alignment_ema=0.7
+    ("maxP", 0.03, 5000,
+     {"solve_interval": 1, "alignment_ema": 0.7},
+     "maxP (+align_ema)"),
+
+    # 4. + c_ema=0.5
+    ("maxP", 0.03, 5000,
+     {"solve_interval": 1, "c_ema": 0.5},
+     "maxP (+c_ema)"),
+
+    # 5. + resample_w0
+    ("maxP", 0.03, 5000,
+     {"solve_interval": 1, "resample_w0": True},
+     "maxP (+resample_w0)"),
+
+    # 6. + use_training_activations
+    ("maxP", 0.03, 5000,
+     {"solve_interval": 1, "use_training_activations": True},
+     "maxP (+train_act)"),
+
+    # 7. All optimizations combined
+    ("maxP", 0.03, 5000,
+     {"solve_interval": 10, "alignment_ema": 0.7, "c_ema": 0.3,
+      "resample_w0": True, "use_training_activations": True},
+     "maxP (all opts)"),
+
+    # 8. muP no-align reference
+    ("muP (no-align)", 0.03, 5000, {}),
 ]
 
 OUTPUT = "experiment.png"
-HIST_METHOD = "maxP (spectral)"  # which method's alignment to plot (None = first with history)
+HIST_METHOD = "maxP (baseline)"  # which method's alignment to plot (None = first with history)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # END CONFIG

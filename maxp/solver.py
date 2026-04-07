@@ -54,6 +54,7 @@ def find_c_adam(
     feature_learning: bool = False,
     M: float = 10.0,
     c_fixed: dict[str, float] | None = None,
+    c_prev: dict[str, float] | None = None,
 ) -> dict[str, tuple[float | None, float]]:
     """Find optimal per-op c values for Adam on an OpGraph.
 
@@ -86,7 +87,10 @@ def find_c_adam(
             if c_fixed and node.name in c_fixed:
                 c_vars[node.name] = c_fixed[node.name]
             else:
-                c_vars[node.name] = plp.LpVariable(f"c_{node.name}")
+                c_var = plp.LpVariable(f"c_{node.name}")
+                if c_prev and node.name in c_prev:
+                    c_var.setInitialValue(c_prev[node.name])
+                c_vars[node.name] = c_var
         else:
             c_vars[node.name] = None
 
@@ -180,6 +184,7 @@ def find_c_sgd(
     feature_learning: bool = False,
     M: float = 10.0,
     c_fixed: dict[str, float] | None = None,
+    c_prev: dict[str, float] | None = None,
 ) -> dict[str, tuple[float | None, float]]:
     """Find optimal per-op c values for SGD on an OpGraph.
 
@@ -203,7 +208,10 @@ def find_c_sgd(
             if c_fixed and node.name in c_fixed:
                 c_vars[node.name] = c_fixed[node.name]
             else:
-                c_vars[node.name] = plp.LpVariable(f"c_{node.name}")
+                c_var = plp.LpVariable(f"c_{node.name}")
+                if c_prev and node.name in c_prev:
+                    c_var.setInitialValue(c_prev[node.name])
+                c_vars[node.name] = c_var
         else:
             c_vars[node.name] = None
 
@@ -328,6 +336,7 @@ def find_c(
     feature_learning: bool = False,
     M: float = 10.0,
     c_fixed: dict[str, float] | None = None,
+    c_prev: dict[str, float] | None = None,
 ) -> dict[str, tuple[float | None, float]]:
     """Find optimal per-op c values on an OpGraph.
 
@@ -336,14 +345,16 @@ def find_c(
     Args:
         c_fixed: Optional dict mapping node name → fixed c value.
             Nodes in this dict use a float constant instead of an LP variable.
+        c_prev: Optional dict mapping node name → previous c value.
+            Used to seed LP variables for warm start.
 
     Returns:
         Dict mapping node name -> (c or None for activation-only, r).
     """
     if optimizer_type.lower() == "adam":
-        return find_c_adam(graph, solver, feature_learning, M, c_fixed=c_fixed)
+        return find_c_adam(graph, solver, feature_learning, M, c_fixed=c_fixed, c_prev=c_prev)
     elif optimizer_type.lower() == "sgd":
-        return find_c_sgd(graph, solver, feature_learning, M, c_fixed=c_fixed)
+        return find_c_sgd(graph, solver, feature_learning, M, c_fixed=c_fixed, c_prev=c_prev)
     else:
         raise ValueError(f"Unknown optimizer_type: {optimizer_type}. Must be 'adam' or 'sgd'.")
 

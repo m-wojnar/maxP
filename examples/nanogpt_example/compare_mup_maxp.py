@@ -226,6 +226,7 @@ def train_maxp(
     lr, n_steps, seq_len, batch_size, seed,
     warmup, decay, alignment_warmup, solve_interval, sample_size, c_ema,
     alignment_overrides=None, norm_mode="rms", method_name="maxP",
+    alignment_ema=0.0, resample_w0=False, use_training_activations=False,
     device=None,
 ) -> RunResult:
     """maxP with WSD schedule (dynamic alignment)."""
@@ -244,6 +245,9 @@ def train_maxp(
         sample_size=sample_size,
         c_ema=c_ema,
         norm_mode=norm_mode,
+        alignment_ema=alignment_ema,
+        resample_w0=resample_w0,
+        use_training_activations=use_training_activations,
         sample_input=sample_input,
     )
     optimizer = torch.optim.AdamW(param.param_groups, lr=lr)
@@ -279,7 +283,10 @@ def train_maxp(
         optimizer.step()
 
         # Dynamic alignment step (also syncs LRs with current lr_prefactor)
-        param.step(sample_x, optimizer)
+        if use_training_activations:
+            param.step(optimizer=optimizer)
+        else:
+            param.step(sample_x, optimizer)
 
         for name, pm in param._pms:
             if pm.weight is not None:
@@ -294,6 +301,8 @@ def train_maxp(
                 })
 
     pbar.close()
+    if use_training_activations:
+        param.remove_hooks()
     return RunResult(
         method=method_name, lr=lr,
         losses=losses, layer_history=layer_history,

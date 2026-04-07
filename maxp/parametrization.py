@@ -26,6 +26,8 @@ def _solve_graph(
     graph: OpGraph,
     optimizer_type: str,
     c_fixed: dict[str, float] | None = None,
+    c_prev: dict[str, float] | None = None,
+    solver: "plp.LpSolver | None" = None,
 ) -> dict[str, float]:
     """Solve LP on graph, with trivial fallback for <2 weighted nodes."""
     weighted = [n for n in graph.nodes.values() if n.has_weight]
@@ -37,7 +39,10 @@ def _solve_graph(
     # All fixed → skip solver entirely
     if c_fixed and all(n.name in c_fixed for n in weighted):
         return {n.name: c_fixed[n.name] for n in weighted}
-    result = find_c(graph, optimizer_type=optimizer_type, c_fixed=c_fixed)
+    result = find_c(
+        graph, optimizer_type=optimizer_type, c_fixed=c_fixed,
+        c_prev=c_prev, solver=solver,
+    )
     return _extract_c(result)
 
 
@@ -95,6 +100,23 @@ class Parametrization:
         c_ema: EMA factor for smoothing ``c`` values toward solver targets.
             Each step: ``c = c_ema * c + (1 - c_ema) * c_target``.
             0.0 means instant updates (default), 0.99 means very slow blending.
+        alignment_ema: EMA factor for smoothing raw alignment measurements.
+            Each step: ``alpha = ema * alpha_old + (1 - ema) * alpha_new``.
+            0.0 means no smoothing (default).  Useful when alignment
+            measurements are noisy (e.g. with ``use_training_activations``).
+        resample_w0: If True, store a random seed per layer instead of
+            cloning ``w_0``.  Regenerates ``w_0`` on-the-fly during alignment
+            measurement, saving memory proportional to the total weight size.
+        use_training_activations: If True, register persistent forward hooks
+            on the model to capture activations during the normal training
+            forward pass.  Eliminates the extra forward pass in ``step()``.
+            When enabled, ``sample_input`` is not required in ``step()``.
+            Call ``register_hooks()`` (or ``capture_initial()``) to install
+            the hooks before training.
+        solver: PuLP solver instance to use for the LP.  Defaults to
+            ``PULP_CBC_CMD(msg=False)``.  Pass any PuLP solver, e.g.
+            ``pulp.CPLEX_CMD(msg=False, warmStart=True)`` for CPLEX.
+            The solver is reused across dynamic re-solves.
     """
 
     def __init__(
@@ -115,6 +137,10 @@ class Parametrization:
         sample_size: int = 32,
         norm_mode: str = "rms",
         c_ema: float = 0.0,
+        alignment_ema: float = 0.0,
+        resample_w0: bool = False,
+        use_training_activations: bool = False,
+        solver: "plp.LpSolver | None" = None,
     ):
         self.model = model
         self.lr_prefactor = lr_prefactor
@@ -174,7 +200,8 @@ class Parametrization:
             elif c_overrides and pm.layer_type in c_overrides:
                 c_fixed[name] = c_overrides[pm.layer_type]
 
-        c_by_name = _solve_graph(graph, optimizer_type, c_fixed=c_fixed or None)
+        c_by_name = _solve_graph(graph, optimizer_type, c_fixed=c_fixed or None,
+                                  solver=solver)
 
         # Apply: init weights, set scale, build param groups
         parametrized_ids: set[int] = set()
@@ -197,8 +224,17 @@ class Parametrization:
                 # Re-initialise weights
                 inner = pm.inner
                 assert inner is not None
+                init_std = std_prefactor * (fan_in ** (-b))
                 with torch.no_grad():
-                    pm.weight.normal_(mean=0.0, std=std_prefactor * (fan_in ** (-b)))
+                    if resample_w0:
+                        seed = torch.randint(0, 2**31, (1,)).item()
+                        pm._w0_seed = seed
+                        pm._w0_std = init_std
+                        gen = torch.Generator(device=pm.weight.device)
+                        gen.manual_seed(seed)
+                        pm.weight.normal_(mean=0.0, std=init_std, generator=gen)
+                    else:
+                        pm.weight.normal_(mean=0.0, std=init_std)
                     for pname, param in inner.named_parameters():
                         if "bias" in pname:
                             param.zero_()
@@ -240,8 +276,15 @@ class Parametrization:
         self._sample_size = sample_size
         self._norm_mode = norm_mode
         self._c_ema = c_ema
+        self._alignment_ema = alignment_ema
+        self._resample_w0 = resample_w0
+        self._use_training_activations = use_training_activations
+        self._persistent_hooks: list[torch.utils.hooks.RemovableHook] = []
+        self._latest_activations: dict[str, torch.Tensor] = {}
         self._step_count = 0
         self._graph = graph
+        self._c_prev: dict[str, float] = dict(c_by_name)
+        self._solver = solver  # user-provided solver (reused for warm start)
 
         # c_target tracks the latest solver output; c blends toward it each step
         self._c_target: dict[str, float] = {
@@ -303,11 +346,41 @@ class Parametrization:
 
         return captured
 
+    def register_hooks(self) -> None:
+        """Install persistent forward hooks to capture activations during training.
+
+        Called automatically by :meth:`capture_initial` when
+        ``use_training_activations=True``.  The hooks populate
+        ``_latest_activations`` on every forward pass so that ``step()``
+        can skip its own forward pass.
+        """
+        self.remove_hooks()
+        sample_size = self._sample_size
+
+        for name, pm in self._pms:
+            if pm.inner is None or isinstance(pm.inner, nn.Embedding):
+                continue
+
+            def _hook(mod, inp, out, _name=name):
+                self._latest_activations[_name] = inp[0].detach().clone()[:sample_size]
+
+            self._persistent_hooks.append(pm.inner.register_forward_hook(_hook))
+
+    def remove_hooks(self) -> None:
+        """Remove any persistent forward hooks."""
+        for h in self._persistent_hooks:
+            h.remove()
+        self._persistent_hooks.clear()
+        self._latest_activations.clear()
+
     def capture_initial(self, sample_input: torch.Tensor) -> None:
         """Capture initial (z_0, w_0) for alignment measurement.
 
         Must be called before training starts (after ``__init__``).
         Stores ``_z0`` and ``_w0`` on each :class:`ParametrizedModule`.
+
+        When ``use_training_activations=True``, also installs persistent
+        forward hooks via :meth:`register_hooks`.
 
         Args:
             sample_input: A batch of inputs to run through the model.
@@ -318,7 +391,19 @@ class Parametrization:
         for name, pm in self._pms:
             if pm.inner is not None and name in captured:
                 pm._z0 = captured[name]
-                pm._w0 = pm.weight.detach().clone()
+                if not self._resample_w0:
+                    pm._w0 = pm.weight.detach().clone()
+
+        if self._use_training_activations:
+            self.register_hooks()
+
+    def _regenerate_w0(self, pm: ParametrizedModule) -> torch.Tensor:
+        """Regenerate initial weights from stored seed (resample_w0 mode)."""
+        w0 = torch.empty_like(pm.weight)
+        gen = torch.Generator(device=pm.weight.device)
+        gen.manual_seed(pm._w0_seed)
+        w0.normal_(mean=0.0, std=pm._w0_std, generator=gen)
+        return w0
 
     def _sync_lrs(self, optimizer: torch.optim.Optimizer | None) -> None:
         """Recompute LRs from current lr_prefactor + c, sync to optimizer.
@@ -344,7 +429,7 @@ class Parametrization:
 
     def step(
         self,
-        sample_input: torch.Tensor,
+        sample_input: torch.Tensor | None = None,
         optimizer: torch.optim.Optimizer | None = None,
     ) -> None:
         """Measure alignment, re-solve LP, update optimizer LRs.
@@ -358,6 +443,7 @@ class Parametrization:
 
         Args:
             sample_input: Batch of inputs for alignment measurement.
+                Not required when ``use_training_activations=True``.
             optimizer: The optimizer whose ``param_groups`` to update.
                 If ``None``, only updates ``self.param_groups`` (user
                 must sync manually).
@@ -377,8 +463,20 @@ class Parametrization:
             self._sync_lrs(optimizer)
             return
 
-        # 1. Capture current (z, w) via hooks
-        current = self._capture_activations(sample_input)
+        # 1. Capture current (z, w) — either from persistent hooks or a dedicated pass
+        if self._use_training_activations:
+            if not self._latest_activations:
+                raise RuntimeError(
+                    "No activations captured yet. Ensure register_hooks() "
+                    "was called and the model has run at least one forward pass."
+                )
+            current = dict(self._latest_activations)
+        else:
+            if sample_input is None:
+                raise ValueError(
+                    "sample_input is required when use_training_activations=False."
+                )
+            current = self._capture_activations(sample_input)
 
         # 2. Compute alignment per PM, write back to PM
         from maxp.alignment import compute_alignment
@@ -388,12 +486,20 @@ class Parametrization:
                 continue
             if pm._z0 is None or name not in current:
                 continue
-            z0, w0 = pm._z0, pm._w0
+            z0 = pm._z0
+            w0 = self._regenerate_w0(pm) if self._resample_w0 else pm._w0
             z = current[name]
             w = pm.weight.detach().clone()
-            pm.alpha, pm.omega, pm.u = compute_alignment(
+            new_alpha, new_omega, new_u = compute_alignment(
                 z0, w0, z, w, fan_in=pm.width_dim, norm_mode=self._norm_mode
             )
+            a_ema = self._alignment_ema
+            if a_ema > 0 and pm.alpha is not None:
+                pm.alpha = a_ema * pm.alpha + (1 - a_ema) * new_alpha
+                pm.omega = a_ema * pm.omega + (1 - a_ema) * new_omega
+                pm.u = a_ema * pm.u + (1 - a_ema) * new_u
+            else:
+                pm.alpha, pm.omega, pm.u = new_alpha, new_omega, new_u
 
         # 3. Re-solve LP (skip c update if infeasible with current alignment)
         try:
@@ -417,13 +523,26 @@ class Parametrization:
 
     def _resolve(self) -> dict[str, float]:
         """Re-solve LP with current per-PM alignment values."""
+        import pulp as plp
+
         for name, pm in self._pms:
             if name in self._graph.nodes:
                 node = self._graph.nodes[name]
                 node.alpha = pm.alpha
                 node.omega = pm.omega
                 node.u = pm.u
-        return _solve_graph(self._graph, self._optimizer_type, c_fixed=self._c_fixed)
+
+        if self._solver is None:
+            self._solver = plp.PULP_CBC_CMD(msg=False, warmStart=True)
+
+        c_by_name = _solve_graph(
+            self._graph, self._optimizer_type,
+            c_fixed=self._c_fixed,
+            c_prev=self._c_prev,
+            solver=self._solver,
+        )
+        self._c_prev = dict(c_by_name)
+        return c_by_name
 
     # ------------------------------------------------------------------
     # Graph builders (used at init time)
