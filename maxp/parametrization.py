@@ -337,7 +337,7 @@ class Parametrization:
                 continue
 
             def _hook(mod, inp, out, _name=name):
-                captured[_name] = inp[0].detach().clone()[:sample_size]
+                captured[_name] = inp[0][:sample_size].detach().clone()
 
             hooks.append(pm.inner.register_forward_hook(_hook))
 
@@ -365,7 +365,7 @@ class Parametrization:
                 continue
 
             def _hook(mod, inp, out, _name=name):
-                self._latest_activations[_name] = inp[0].detach().clone()[:sample_size]
+                self._latest_activations[_name] = inp[0][:sample_size].detach().clone()
 
             self._persistent_hooks.append(pm.inner.register_forward_hook(_hook))
 
