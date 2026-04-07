@@ -277,9 +277,9 @@ class TestAllOptimizationsTraining:
 
         for name, pm in param._pms:
             if pm.weight is not None:
-                assert math.isfinite(pm.alpha), f"{name}: alpha not finite"
-                assert math.isfinite(pm.omega), f"{name}: omega not finite"
-                assert math.isfinite(pm.u), f"{name}: u not finite"
+                assert math.isfinite(pm.align_z0_dW), f"{name}: alpha not finite"
+                assert math.isfinite(pm.align_dZ_w0), f"{name}: omega not finite"
+                assert math.isfinite(pm.align_dZ_dW), f"{name}: u not finite"
 
         for g in param.param_groups:
             if g.get("maxp_managed"):

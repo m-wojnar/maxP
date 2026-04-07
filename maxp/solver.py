@@ -136,9 +136,9 @@ def find_c_adam(
                 x2 = plp.LpVariable(f"x2_{node.name}")
                 x3 = plp.LpVariable(f"x3_{node.name}")
 
-                lp += x1 == node.a + c - node.alpha
-                lp += x2 == node.a + c + r_in - node.u
-                lp += x3 == (node.a + node.b) + r_in - node.omega
+                lp += x1 == node.a + c - node.align_z0_dW
+                lp += x2 == node.a + c + r_in - node.align_dZ_dW
+                lp += x3 == (node.a + node.b) + r_in - node.align_dZ_w0
                 lp += r == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
             else:
                 # Activation-only: r = r_in + a
@@ -276,9 +276,9 @@ def find_c_sgd(
                 x2 = plp.LpVariable(f"x2_{node.name}")
                 x3 = plp.LpVariable(f"x3_{node.name}")
 
-                lp += x1 == node.a + node.b + r_in - node.omega
-                lp += x2 == 2 * node.a + c - node.alpha
-                lp += x3 == 2 * node.a + c + r_in - node.u
+                lp += x1 == node.a + node.b + r_in - node.align_dZ_w0
+                lp += x2 == 2 * node.a + c - node.align_z0_dW
+                lp += x3 == 2 * node.a + c + r_in - node.align_dZ_dW
                 lp += r == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
             else:
                 lp += r == r_in + node.a
@@ -290,9 +290,9 @@ def find_c_sgd(
                 x2 = plp.LpVariable(f"x2_{node.name}")
                 x3 = plp.LpVariable(f"x3_{node.name}")
 
-                lp += x1 == g_i + node.a + c - node.alpha
-                lp += x2 == g_i + node.a + c + r_in - node.u
-                lp += x3 == 0.5 + r_in - node.omega
+                lp += x1 == g_i + node.a + c - node.align_z0_dW
+                lp += x2 == g_i + node.a + c + r_in - node.align_dZ_dW
+                lp += x3 == 0.5 + r_in - node.align_dZ_w0
                 lp += r == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
             else:
                 lp += r == r_in + node.a

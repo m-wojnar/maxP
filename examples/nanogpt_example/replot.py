@@ -210,9 +210,9 @@ def plot_comparison(
             steps = range(len(history))
             short = _short_name(name)
             c = colors[name]
-            ax_alpha.plot(steps, [h["alpha"] for h in history], color=c, lw=1.2)
-            ax_omega.plot(steps, [h["omega"] for h in history], color=c, lw=1.2)
-            ax_u.plot(steps, [h["u"] for h in history], color=c, lw=1.2)
+            ax_alpha.plot(steps, [h.get("align_z0_dW", h.get("alpha")) for h in history], color=c, lw=1.2)
+            ax_omega.plot(steps, [h.get("align_dZ_w0", h.get("omega")) for h in history], color=c, lw=1.2)
+            ax_u.plot(steps, [h.get("align_dZ_dW", h.get("u")) for h in history], color=c, lw=1.2)
             ax_lr.plot(steps, [h["lr"] for h in history], color=c, lw=1.2)
 
         for ax, ref, lbl in [
@@ -220,7 +220,7 @@ def plot_comparison(
         ]:
             ax.axhline(ref, color="k", ls=":", lw=0.8, alpha=0.5)
 
-        for ax, key in [(ax_alpha, "alpha"), (ax_omega, "omega"), (ax_u, "u")]:
+        for ax, key in [(ax_alpha, "align_z0_dW"), (ax_omega, "align_dZ_w0"), (ax_u, "align_dZ_dW")]:
             all_vals = []
             for history in hist.values():
                 all_vals.extend(h[key] for h in history if math.isfinite(h[key]))

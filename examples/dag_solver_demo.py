@@ -198,7 +198,7 @@ def demo_3_traced_transformer():
     }
     for name, node in graph2.nodes.items():
         if name in alignment_map:
-            node.alpha = alignment_map[name]
+            node.align_z0_dW = alignment_map[name]
 
     res_measured = find_c_adam(graph2)
 

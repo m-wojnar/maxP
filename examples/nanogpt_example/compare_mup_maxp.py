@@ -225,7 +225,7 @@ def train_maxp(
     d_model, n_heads, n_layers, d_ff, data, vocab_size, *,
     lr, n_steps, seq_len, batch_size, seed,
     warmup, decay, alignment_warmup, solve_interval, sample_size, c_ema,
-    alignment_overrides=None, norm_mode="rms", method_name="maxP",
+    alignment_overrides=None, method_name="maxP",
     alignment_ema=0.0, resample_w0=False, use_training_activations=False,
     warm_start=False, device=None,
 ) -> RunResult:
@@ -244,7 +244,6 @@ def train_maxp(
         solve_interval=solve_interval,
         sample_size=sample_size,
         c_ema=c_ema,
-        norm_mode=norm_mode,
         alignment_ema=alignment_ema,
         resample_w0=resample_w0,
         use_training_activations=use_training_activations,
@@ -292,9 +291,9 @@ def train_maxp(
         for name, pm in param._pms:
             if pm.weight is not None:
                 layer_history[name].append({
-                    "alpha": pm.alpha,
-                    "omega": pm.omega,
-                    "u": pm.u,
+                    "align_z0_dW": pm.align_z0_dW,
+                    "align_dZ_w0": pm.align_dZ_w0,
+                    "align_dZ_dW": pm.align_dZ_dW,
                     "lr": next(
                         g["lr"] for g in param.param_groups
                         if g.get("layer_name") == name

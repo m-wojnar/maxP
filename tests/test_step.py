@@ -237,18 +237,18 @@ class TestInitialAlignmentOnPM:
     def test_full_alignment_preset(self):
         model, param, optimizer, X = _setup(alignment="full")
         for _, pm in param._pms:
-            assert pm.alpha == 1.0
-            assert pm.omega == 0.5
-            assert pm.u == 1.0
+            assert pm.align_z0_dW == 1.0
+            assert pm.align_dZ_w0 == 0.5
+            assert pm.align_dZ_dW == 1.0
 
     def test_no_alignment_preset(self):
         torch.manual_seed(0)
         model = SimpleMLP()
         param = Parametrization(model, lr_prefactor=0.01, alignment="no")
         for _, pm in param._pms:
-            assert pm.alpha == 0.5
-            assert pm.omega == 0.5
-            assert pm.u == 0.5
+            assert pm.align_z0_dW == 0.5
+            assert pm.align_dZ_w0 == 0.5
+            assert pm.align_dZ_dW == 0.5
 
 
 class TestStepInfeasibleLP:
@@ -261,9 +261,9 @@ class TestStepInfeasibleLP:
         # Set extreme alignment on all PMs
         for _, pm in param._pms:
             if pm.weight is not None:
-                pm.alpha = 100.0
-                pm.omega = 100.0
-                pm.u = 100.0
+                pm.align_z0_dW = 100.0
+                pm.align_dZ_w0 = 100.0
+                pm.align_dZ_dW = 100.0
 
         with pytest.raises(ValueError, match="infeasible|optimal"):
             param._resolve()
@@ -337,12 +337,12 @@ class TestStepUpdatesAlignmentOnPM:
 
         for name, pm in param._pms:
             if pm.weight is not None:
-                assert pm.alpha is not None
-                assert pm.omega is not None
-                assert pm.u is not None
-                assert math.isfinite(pm.alpha), f"{name}: alpha={pm.alpha}"
-                assert math.isfinite(pm.omega), f"{name}: omega={pm.omega}"
-                assert math.isfinite(pm.u), f"{name}: u={pm.u}"
+                assert pm.align_z0_dW is not None
+                assert pm.align_dZ_w0 is not None
+                assert pm.align_dZ_dW is not None
+                assert math.isfinite(pm.align_z0_dW), f"{name}: align_z0_dW={pm.align_z0_dW}"
+                assert math.isfinite(pm.align_dZ_w0), f"{name}: align_dZ_w0={pm.align_dZ_w0}"
+                assert math.isfinite(pm.align_dZ_dW), f"{name}: align_dZ_dW={pm.align_dZ_dW}"
 
 
 # ---------------------------------------------------------------------------
@@ -507,9 +507,9 @@ class TestAlignmentEMA:
         param.step(X)
         for _, pm in param._pms:
             if pm.weight is not None:
-                assert math.isfinite(pm.alpha)
-                assert math.isfinite(pm.omega)
-                assert math.isfinite(pm.u)
+                assert math.isfinite(pm.align_z0_dW)
+                assert math.isfinite(pm.align_dZ_w0)
+                assert math.isfinite(pm.align_dZ_dW)
 
     def test_ema_smooths_values(self):
         """With high EMA, alignment values should stay closer to initial preset."""
@@ -518,7 +518,7 @@ class TestAlignmentEMA:
 
         # Record initial preset values
         initial = {
-            name: (pm.alpha, pm.omega, pm.u)
+            name: (pm.align_z0_dW, pm.align_dZ_w0, pm.align_dZ_dW)
             for name, pm in param._pms if pm.weight is not None
         }
 
@@ -534,8 +534,8 @@ class TestAlignmentEMA:
         for name, pm in param._pms:
             if pm.weight is not None:
                 init_a, init_o, init_u = initial[name]
-                assert abs(pm.alpha - init_a) < 1.0, f"{name}: alpha drifted too far"
-                assert math.isfinite(pm.alpha)
+                assert abs(pm.align_z0_dW - init_a) < 1.0, f"{name}: alpha drifted too far"
+                assert math.isfinite(pm.align_z0_dW)
 
     def test_ema_pinned_layers_unaffected(self):
         """Pinned layers should not have EMA applied."""
@@ -560,9 +560,9 @@ class TestAlignmentEMA:
         # hidden PM should keep its pinned values exactly
         for name, pm in param._pms:
             if pm.layer_type == "hidden":
-                assert pm.alpha == 0.7
-                assert pm.omega == 0.3
-                assert pm.u == 0.8
+                assert pm.align_z0_dW == 0.7
+                assert pm.align_dZ_w0 == 0.3
+                assert pm.align_dZ_dW == 0.8
 
     def test_ema_step_succeeds(self):
         """Full training loop with alignment_ema runs without error."""
@@ -653,7 +653,7 @@ class TestResampleW0:
             z = current[name]
             w = pm.weight.detach().clone()
             expected[name] = compute_alignment(
-                pm._z0, w0, z, w, fan_in=pm.width_dim, norm_mode="rms"
+                pm._z0, w0, z, w, fan_in=pm.width_dim
             )
 
         param.step(X)
@@ -661,9 +661,9 @@ class TestResampleW0:
         for name, pm in param._pms:
             if name in expected:
                 ea, eo, eu = expected[name]
-                assert abs(pm.alpha - ea) < 1e-10, f"{name}: alpha"
-                assert abs(pm.omega - eo) < 1e-10, f"{name}: omega"
-                assert abs(pm.u - eu) < 1e-10, f"{name}: u"
+                assert abs(pm.align_z0_dW - ea) < 1e-10, f"{name}: alpha"
+                assert abs(pm.align_dZ_w0 - eo) < 1e-10, f"{name}: omega"
+                assert abs(pm.align_dZ_dW - eu) < 1e-10, f"{name}: u"
 
     def test_step_succeeds(self):
         """Full training loop with resample_w0=True runs without error."""
@@ -698,15 +698,15 @@ class TestWarmStartLP:
             "emb": DagNode("emb", a=-0.5, b=0.5, layer_type="embedding",
                            has_weight=True, width_dim=32,
                            predecessors=[], successors=["hid"],
-                           alpha=1.0, omega=0.5, u=1.0),
+                           align_z0_dW=1.0, align_dZ_w0=0.5, align_dZ_dW=1.0),
             "hid": DagNode("hid", a=0.0, b=0.5, layer_type="hidden",
                            has_weight=True, width_dim=32,
                            predecessors=["emb"], successors=["out"],
-                           alpha=1.0, omega=0.5, u=1.0),
+                           align_z0_dW=1.0, align_dZ_w0=0.5, align_dZ_dW=1.0),
             "out": DagNode("out", a=0.5, b=0.5, layer_type="readout",
                            has_weight=True, width_dim=32,
                            predecessors=["hid"], successors=[],
-                           alpha=1.0, omega=0.5, u=1.0),
+                           align_z0_dW=1.0, align_dZ_w0=0.5, align_dZ_dW=1.0),
         }
         graph = OpGraph(nodes)
 
@@ -979,9 +979,9 @@ class TestAllOptimizationsCombined:
         # Alignment values should be finite
         for _, pm in param._pms:
             if pm.weight is not None:
-                assert math.isfinite(pm.alpha)
-                assert math.isfinite(pm.omega)
-                assert math.isfinite(pm.u)
+                assert math.isfinite(pm.align_z0_dW)
+                assert math.isfinite(pm.align_dZ_w0)
+                assert math.isfinite(pm.align_dZ_dW)
         # No _w0 stored
         for _, pm in param._pms:
             if pm.weight is not None:
