@@ -851,8 +851,9 @@ class TestTrainingActivations:
         model, param, optimizer, X = _setup(use_training_activations=True)
         assert len(param._persistent_hooks) == 0  # none before capture
         param.capture_initial(X)
-        # Should have hooks for all non-embedding PMs with inner modules
-        expected = sum(
+        # Should have hooks for all non-embedding PMs with inner modules,
+        # plus one pre-forward hook on the model that clears old activations
+        expected = 1 + sum(
             1 for _, pm in param._pms
             if pm.inner is not None and not isinstance(pm.inner, nn.Embedding)
         )

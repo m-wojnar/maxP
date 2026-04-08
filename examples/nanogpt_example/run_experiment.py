@@ -9,8 +9,12 @@ Usage:
     python run_experiment.py
 """
 
+import csv
 import sys
+import time
 from pathlib import Path
+
+import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -101,7 +105,7 @@ RUNS = [
 
     # 5. + use_training_activations
     ("maxP", 0.03, 5000,
-     {"use_training_activations": True},
+     {"use_training_activations": True, "sample_size": 6},
      "maxP (+train_act)"),
 
     # 6. + warm_start
@@ -113,7 +117,7 @@ RUNS = [
     ("maxP", 0.03, 5000,
      {"alignment_ema": 0.7, "c_ema": 0.3,
       "resample_w0": True, "use_training_activations": True,
-      "warm_start": True},
+      "warm_start": True, "sample_size": 6},
      "maxP (all opts)"),
 
     # 8. muP no-align reference
@@ -162,6 +166,7 @@ def main():
 
     # Run experiments
     results: list[RunResult] = []
+    stats: list[dict] = []
 
     for i, run_spec in enumerate(RUNS):
         method, lr, steps, extra = run_spec[:4]
@@ -205,10 +210,60 @@ def main():
 
         if result is not None:
             print("  → loaded from cache")
+            stats.append({
+                "run": display_name, "lr": lr, "steps": steps,
+                "final_loss": "cached", "time_s": "", "gpu_max_mb": "", "gpu_mean_mb": "",
+            })
         else:
             print("  → training...")
+            use_gpu = device.type == "cuda" if isinstance(device, torch.device) else str(device).startswith("cuda")
+            if use_gpu:
+                torch.cuda.reset_peak_memory_stats()
+                torch.cuda.synchronize()
+
+            mem_samples: list[float] = []
+
+            # Patch step counter to sample GPU memory periodically
+            _orig_step = TRAIN_FN[method].__code__  # noqa: just a marker
+            if use_gpu:
+                import threading
+                _stop_mem = threading.Event()
+
+                def _sample_mem():
+                    while not _stop_mem.is_set():
+                        mem_samples.append(torch.cuda.memory_allocated() / 1024 / 1024)
+                        _stop_mem.wait(0.5)
+
+                mem_thread = threading.Thread(target=_sample_mem, daemon=True)
+                mem_thread.start()
+
+            t0 = time.perf_counter()
             result = TRAIN_FN[method](**train_kwargs)
+            elapsed = time.perf_counter() - t0
+
+            if use_gpu:
+                torch.cuda.synchronize()
+                _stop_mem.set()
+                mem_thread.join()
+                gpu_max = torch.cuda.max_memory_allocated() / 1024 / 1024
+                gpu_mean = sum(mem_samples) / len(mem_samples) if mem_samples else 0.0
+            else:
+                gpu_max = 0.0
+                gpu_mean = 0.0
+
             _save_result(path, result)
+
+            print(f"  → time: {elapsed:.1f}s")
+            if use_gpu:
+                print(f"  → GPU mem: max={gpu_max:.0f} MB, mean={gpu_mean:.0f} MB")
+
+            stats.append({
+                "run": display_name, "lr": lr, "steps": steps,
+                "final_loss": f"{result.final_loss:.4f}" if not result.diverged else "DIV",
+                "time_s": f"{elapsed:.1f}",
+                "gpu_max_mb": f"{gpu_max:.0f}" if use_gpu else "",
+                "gpu_mean_mb": f"{gpu_mean:.0f}" if use_gpu else "",
+            })
 
         tag = "DIV" if result.diverged else f"{result.final_loss:.4f}"
         print(f"  → final_loss={tag}")
@@ -216,10 +271,23 @@ def main():
 
     # Summary
     print(f"\n{'='*60}")
-    for r in results:
-        tag = "DIV" if r.diverged else f"{r.final_loss:.4f}"
-        print(f"  {r.method:20s}  lr={r.lr}  loss={tag}")
+    print(f"  {'Run':25s} {'Loss':>8s} {'Time':>8s} {'GPU Max':>9s} {'GPU Mean':>9s}")
+    print(f"  {'-'*25} {'-'*8} {'-'*8} {'-'*9} {'-'*9}")
+    for s in stats:
+        loss = s["final_loss"]
+        t = s["time_s"] if s["time_s"] else "-"
+        gmax = f'{s["gpu_max_mb"]} MB' if s["gpu_max_mb"] else "-"
+        gmean = f'{s["gpu_mean_mb"]} MB' if s["gpu_mean_mb"] else "-"
+        print(f"  {s['run']:25s} {loss:>8s} {t:>8s} {gmax:>9s} {gmean:>9s}")
     print(f"{'='*60}")
+
+    # Save stats to CSV
+    stats_path = Path(OUTPUT).with_suffix(".csv")
+    with open(stats_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["run", "lr", "steps", "final_loss", "time_s", "gpu_max_mb", "gpu_mean_mb"])
+        writer.writeheader()
+        writer.writerows(stats)
+    print(f"\nStats saved to {stats_path}")
 
     # Plot (uses all results — best of each method if multiple)
     by_method: dict[str, list[RunResult]] = {}

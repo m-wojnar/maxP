@@ -359,13 +359,23 @@ class Parametrization:
         """
         self.remove_hooks()
         sample_size = self._sample_size
+        activations = self._latest_activations
+
+        # Pre-forward hook on the model clears old activations so they
+        # don't coexist in memory with the new autograd graph.
+        def _clear_hook(mod, inp):
+            activations.clear()
+
+        self._persistent_hooks.append(
+            self.model.register_forward_pre_hook(_clear_hook)
+        )
 
         for name, pm in self._pms:
             if pm.inner is None or isinstance(pm.inner, nn.Embedding):
                 continue
 
             def _hook(mod, inp, out, _name=name):
-                self._latest_activations[_name] = inp[0][:sample_size].detach().clone()
+                activations[_name] = inp[0][:sample_size].detach().clone()
 
             self._persistent_hooks.append(pm.inner.register_forward_hook(_hook))
 
