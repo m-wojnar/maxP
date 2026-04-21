@@ -62,6 +62,11 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
 
+[tool.uv]
+conflicts = [
+    [{ extra = "cu128" }, { extra = "cu130" }],
+]
+
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
