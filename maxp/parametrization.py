@@ -402,10 +402,13 @@ class Parametrization:
         captured = self._capture_activations(sample_input)
 
         for name, pm in self._pms:
-            if pm.inner is not None and name in captured:
+            if pm.inner is not None and pm.weight is not None and name in captured:
                 pm._z0 = captured[name]
                 if not self._resample_w0:
-                    pm._w0 = pm.weight.detach().clone()
+                    _w = pm.weight.detach()
+                    if hasattr(_w, "to_local"):
+                        _w = _w.to_local()
+                    pm._w0 = _w.clone()
 
         if self._use_training_activations:
             self.register_hooks()
@@ -502,7 +505,10 @@ class Parametrization:
             z0 = pm._z0
             w0 = self._regenerate_w0(pm) if self._resample_w0 else pm._w0
             z = current[name]
-            w = pm.weight.detach().clone()
+            w = pm.weight.detach()
+            if hasattr(w, "to_local"):
+                w = w.to_local()
+            w = w.clone()
             new_a0_dW, new_dZ_w0, new_dZ_dW = compute_alignment(
                 z0, w0, z, w, fan_in=pm.width_dim
             )

@@ -40,11 +40,10 @@ def diagnose_axis(
         widths: list of widths to sweep
         n_steps: training steps per width
         n_seeds: random seeds per width
-        train_step_fn: ``fn(model, step_idx) -> None``  Runs one optimiser
-            step (forward, backward, step, zero_grad).  If ``None`` a
-            default loop using ``AdamW`` with cross-entropy is used — this
-            requires the model to have a ``.tok_emb`` attribute (works for
-            the example transformers).
+        train_step_fn: ``fn(model, param_groups) -> fn(model, step_idx)``
+            Factory that builds and returns a step closure (forward, backward,
+            step, zero_grad).  If ``None`` a default factory is used that
+            requires the model to have a ``.tok_emb`` attribute.
 
     Returns:
         all_ops: list of ClassifiedOp (traced ops, no elementwise)
@@ -72,11 +71,9 @@ def diagnose_axis(
             torch.manual_seed(seed_idx * 1000 + w)
             model, param_groups = make_model_fn(w)
 
-            # Build default train_step if none supplied
-            if train_step_fn is not None:
-                _step = train_step_fn
-            else:
-                _step = _default_train_step(model, param_groups)
+            # Build step closure from factory
+            factory = train_step_fn if train_step_fn is not None else _default_train_step
+            _step = factory(model, param_groups)
 
             for step in range(n_steps):
                 torch.manual_seed(seed_idx * 100000 + step)

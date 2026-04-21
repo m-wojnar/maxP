@@ -42,8 +42,10 @@ dev = [
     "pytest-cov>=7.0.0",
     "pyyaml>=6.0.3",
     "tiktoken>=0.7.0",
+    "torchtitan>=0.2.2",
     "torchvision>=0.24.1",
     "tqdm>=4.60.0",
+    "wandb>=0.26.0",
 ]
 
 [project.urls]
