@@ -34,6 +34,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+cu128 = ["torch>=2.8.0", "torchvision"]
+cu130 = ["torch>=2.8.0", "torchvision"]
 dev = [
     "datasets>=3.0.0",
     "matplotlib>=3.10.8",
@@ -42,7 +44,7 @@ dev = [
     "pytest-cov>=7.0.0",
     "pyyaml>=6.0.3",
     "tiktoken>=0.7.0",
-    "torchtitan>=0.2.2",
+    "torchtitan",
     "torchvision>=0.24.1",
     "tqdm>=4.60.0",
     "wandb>=0.26.0",
@@ -59,3 +61,24 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu128", extra = "cu128" },
+    { index = "pytorch-cu130", extra = "cu130" },
+]
+torchvision = [
+    { index = "pytorch-cu128", extra = "cu128" },
+    { index = "pytorch-cu130", extra = "cu130" },
+]
+torchtitan = { git = "https://github.com/pytorch/torchtitan.git", rev = "1a2fef04e08fb7d1667deebeae598d6a3b9124a2" }
