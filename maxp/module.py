@@ -68,6 +68,9 @@ class ParametrizedModule(nn.Module):
         # Initial snapshot for alignment measurement
         self._z0: torch.Tensor | None = None
         self._w0: torch.Tensor | None = None
+        # Seed-based W0 regeneration (alternative to storing _w0)
+        self._w0_seed: int | None = None
+        self._w0_std: float | None = None
 
     @property
     def weight(self) -> torch.nn.Parameter | None:

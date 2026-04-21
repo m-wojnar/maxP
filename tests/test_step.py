@@ -484,3 +484,508 @@ class TestCOverrideDynamicStep:
         for g in managed:
             assert g["c"] == 0.0
             assert abs(g["lr"] - lr) < 1e-12
+
+
+# ---------------------------------------------------------------------------
+# Tests for alignment EMA
+# ---------------------------------------------------------------------------
+
+class TestAlignmentEMA:
+    """Tests for alignment_ema smoothing of raw alignment measurements."""
+
+    def test_ema_zero_is_raw(self):
+        """alignment_ema=0 gives same behavior as no EMA (raw values)."""
+        model, param, optimizer, X = _setup(alignment_ema=0.0)
+        param.capture_initial(X)
+
+        for _ in range(5):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+
+        param.step(X)
+        for _, pm in param._pms:
+            if pm.weight is not None:
+                assert math.isfinite(pm.align_z0_dW)
+                assert math.isfinite(pm.align_dZ_w0)
+                assert math.isfinite(pm.align_dZ_dW)
+
+    def test_ema_smooths_values(self):
+        """With high EMA, alignment values should stay closer to initial preset."""
+        model, param, optimizer, X = _setup(alignment_ema=0.95)
+        param.capture_initial(X)
+
+        # Record initial preset values
+        initial = {
+            name: (pm.align_z0_dW, pm.align_dZ_w0, pm.align_dZ_dW)
+            for name, pm in param._pms if pm.weight is not None
+        }
+
+        # Train and step several times
+        for _ in range(5):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+            param.step(X)
+
+        # With high EMA, values should still be close to initial preset
+        for name, pm in param._pms:
+            if pm.weight is not None:
+                init_a, init_o, init_u = initial[name]
+                assert abs(pm.align_z0_dW - init_a) < 1.0, f"{name}: alpha drifted too far"
+                assert math.isfinite(pm.align_z0_dW)
+
+    def test_ema_pinned_layers_unaffected(self):
+        """Pinned layers should not have EMA applied."""
+        torch.manual_seed(0)
+        model = SimpleMLP(d=32)
+        param = Parametrization(
+            model, lr_prefactor=0.01,
+            alignment_ema=0.9,
+            alignment_overrides={"hidden": (0.7, 0.3, 0.8)},
+        )
+        X = torch.randn(8, 16)
+        param.capture_initial(X)
+        optimizer = torch.optim.Adam(param.param_groups)
+
+        for _ in range(5):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+            param.step(X, optimizer)
+
+        # hidden PM should keep its pinned values exactly
+        for name, pm in param._pms:
+            if pm.layer_type == "hidden":
+                assert pm.align_z0_dW == 0.7
+                assert pm.align_dZ_w0 == 0.3
+                assert pm.align_dZ_dW == 0.8
+
+    def test_ema_step_succeeds(self):
+        """Full training loop with alignment_ema runs without error."""
+        model, param, optimizer, X = _setup(alignment_ema=0.5)
+        param.capture_initial(X)
+
+        for _ in range(10):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+            param.step(X, optimizer)
+
+        for g in param.param_groups:
+            if g.get("maxp_managed"):
+                assert g["lr"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Tests for seed-based W0 regeneration
+# ---------------------------------------------------------------------------
+
+class TestResampleW0:
+    """Tests for resample_w0 mode (seed-based W0 regeneration)."""
+
+    def test_w0_not_stored(self):
+        """With resample_w0=True, _w0 should remain None after capture_initial."""
+        model, param, optimizer, X = _setup(resample_w0=True)
+        param.capture_initial(X)
+
+        for _, pm in param._pms:
+            if pm.weight is not None:
+                assert pm._w0 is None, "_w0 should not be stored"
+                assert pm._w0_seed is not None, "seed should be stored"
+                assert pm._w0_std is not None, "std should be stored"
+                assert pm._z0 is not None, "_z0 should still be stored"
+
+    def test_seed_deterministic(self):
+        """Regenerating w0 from seed produces identical tensor each time."""
+        model, param, optimizer, X = _setup(resample_w0=True)
+
+        for _, pm in param._pms:
+            if pm.weight is not None:
+                w0_a = param._regenerate_w0(pm)
+                w0_b = param._regenerate_w0(pm)
+                assert torch.equal(w0_a, w0_b), "Regenerated w0 should be identical"
+
+    def test_regenerated_matches_init(self):
+        """Regenerated w0 should match the actual initial weights."""
+        torch.manual_seed(0)
+        model = SimpleMLP(d=32)
+        param = Parametrization(model, lr_prefactor=0.01, resample_w0=True)
+
+        for _, pm in param._pms:
+            if pm.weight is not None:
+                w0 = param._regenerate_w0(pm)
+                assert torch.equal(w0, pm.weight), (
+                    "Regenerated w0 should match current weight (before training)"
+                )
+
+    def test_alignment_uses_correct_w0(self):
+        """Alignment computed with regenerated w0 uses the true initial weights."""
+        model, param, optimizer, X = _setup(resample_w0=True)
+
+        # Before training, regenerated w0 should match current weight exactly
+        for _, pm in param._pms:
+            if pm.weight is not None:
+                w0 = param._regenerate_w0(pm)
+                assert torch.equal(w0, pm.weight)
+
+        param.capture_initial(X)
+
+        # Train to create non-trivial dw
+        for _ in range(5):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+
+        # Manually compute alignment with regenerated w0 and compare to step()
+        from maxp.alignment import compute_alignment
+        current = param._capture_activations(X)
+        expected = {}
+        for name, pm in param._pms:
+            if pm._z0 is None or name not in current:
+                continue
+            w0 = param._regenerate_w0(pm)
+            z = current[name]
+            w = pm.weight.detach().clone()
+            expected[name] = compute_alignment(
+                pm._z0, w0, z, w, fan_in=pm.width_dim
+            )
+
+        param.step(X)
+
+        for name, pm in param._pms:
+            if name in expected:
+                ea, eo, eu = expected[name]
+                assert abs(pm.align_z0_dW - ea) < 1e-10, f"{name}: alpha"
+                assert abs(pm.align_dZ_w0 - eo) < 1e-10, f"{name}: omega"
+                assert abs(pm.align_dZ_dW - eu) < 1e-10, f"{name}: u"
+
+    def test_step_succeeds(self):
+        """Full training loop with resample_w0=True runs without error."""
+        model, param, optimizer, X = _setup(resample_w0=True)
+        param.capture_initial(X)
+
+        for _ in range(10):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+            param.step(X, optimizer)
+
+        for g in param.param_groups:
+            if g.get("maxp_managed"):
+                assert g["lr"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Tests for warm start LP
+# ---------------------------------------------------------------------------
+
+class TestWarmStartLP:
+    """Tests for LP warm start optimization."""
+
+    def test_warm_start_same_result_as_cold(self):
+        """Warm start should produce the same c values as cold start."""
+        from maxp.solver import find_c
+        from maxp.dag import DagNode, OpGraph
+
+        nodes = {
+            "emb": DagNode("emb", a=-0.5, b=0.5, layer_type="embedding",
+                           has_weight=True, width_dim=32,
+                           predecessors=[], successors=["hid"],
+                           align_z0_dW=1.0, align_dZ_w0=0.5, align_dZ_dW=1.0),
+            "hid": DagNode("hid", a=0.0, b=0.5, layer_type="hidden",
+                           has_weight=True, width_dim=32,
+                           predecessors=["emb"], successors=["out"],
+                           align_z0_dW=1.0, align_dZ_w0=0.5, align_dZ_dW=1.0),
+            "out": DagNode("out", a=0.5, b=0.5, layer_type="readout",
+                           has_weight=True, width_dim=32,
+                           predecessors=["hid"], successors=[],
+                           align_z0_dW=1.0, align_dZ_w0=0.5, align_dZ_dW=1.0),
+        }
+        graph = OpGraph(nodes)
+
+        # Cold start
+        result_cold = find_c(graph, "adam")
+        c_cold = {n: c for n, (c, _) in result_cold.items() if c is not None}
+
+        # Warm start with previous solution
+        import pulp as plp
+        solver = plp.PULP_CBC_CMD(msg=False, warmStart=True)
+        result_warm = find_c(graph, "adam", solver=solver, c_prev=c_cold)
+        c_warm = {n: c for n, (c, _) in result_warm.items() if c is not None}
+
+        for name in c_cold:
+            assert abs(c_cold[name] - c_warm[name]) < 1e-6, (
+                f"{name}: cold={c_cold[name]} warm={c_warm[name]}"
+            )
+
+    def test_warm_start_with_changing_alignment(self):
+        """Multiple re-solves with changing alignment all produce valid results."""
+        model, param, optimizer, X = _setup()
+        param.capture_initial(X)
+
+        # Multiple steps — each triggers a re-solve with warm start
+        for _ in range(10):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+            param.step(X, optimizer)
+
+        # All LRs should be valid
+        for g in param.param_groups:
+            if g.get("maxp_managed"):
+                assert g["lr"] > 0
+
+    def test_c_prev_updated_after_solve(self):
+        """After a solve, _c_prev should contain the latest c values."""
+        model, param, optimizer, X = _setup()
+        param.capture_initial(X)
+
+        # Initial _c_prev should be populated from __init__
+        assert len(param._c_prev) > 0
+
+        for _ in range(3):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+
+        param.step(X, optimizer)
+
+        # _c_prev should still have entries for all managed layers
+        managed_names = {
+            g["layer_name"] for g in param.param_groups
+            if g.get("maxp_managed")
+        }
+        for name in managed_names:
+            assert name in param._c_prev
+
+    def test_custom_solver(self):
+        """User-provided solver instance is used for both init and re-solves."""
+        import pulp as plp
+        custom_solver = plp.PULP_CBC_CMD(msg=False, warmStart=True)
+
+        torch.manual_seed(0)
+        model = SimpleMLP(d=32)
+        param = Parametrization(
+            model, lr_prefactor=0.01, solver=custom_solver,
+        )
+
+        # The stored solver should be the one we passed
+        assert param._solver is custom_solver
+
+        X = torch.randn(8, 16)
+        param.capture_initial(X)
+        optimizer = torch.optim.Adam(param.param_groups)
+
+        for _ in range(5):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+
+        param.step(X, optimizer)
+
+        # Should still be using our solver after re-solve
+        assert param._solver is custom_solver
+        for g in param.param_groups:
+            if g.get("maxp_managed"):
+                assert g["lr"] > 0
+
+    def test_warm_start_flag_default_off(self):
+        """By default warm_start is False."""
+        model, param, optimizer, X = _setup()
+        assert param._warm_start is False
+
+    def test_warm_start_flag_on(self):
+        """warm_start=True enables warm start on the default solver."""
+        model, param, optimizer, X = _setup(warm_start=True)
+        assert param._warm_start is True
+        param.capture_initial(X)
+
+        for _ in range(5):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+
+        param.step(X, optimizer)
+
+        for g in param.param_groups:
+            if g.get("maxp_managed"):
+                assert g["lr"] > 0
+
+    def test_warm_start_produces_same_result(self):
+        """warm_start=True produces the same c values as without."""
+        torch.manual_seed(0)
+        model_a = SimpleMLP(d=32)
+        torch.manual_seed(0)
+        model_b = SimpleMLP(d=32)
+
+        param_a = Parametrization(model_a, lr_prefactor=0.01, warm_start=False)
+        param_b = Parametrization(model_b, lr_prefactor=0.01, warm_start=True)
+
+        managed_a = {g["layer_name"]: g["c"] for g in param_a.param_groups if g.get("maxp_managed")}
+        managed_b = {g["layer_name"]: g["c"] for g in param_b.param_groups if g.get("maxp_managed")}
+
+        for name in managed_a:
+            assert abs(managed_a[name] - managed_b[name]) < 1e-6, f"{name}: c mismatch"
+
+
+# ---------------------------------------------------------------------------
+# Tests for piggyback on training forward pass
+# ---------------------------------------------------------------------------
+
+class TestTrainingActivations:
+    """Tests for use_training_activations mode."""
+
+    def test_hooks_registered_after_capture(self):
+        """After capture_initial, persistent hooks should be installed."""
+        model, param, optimizer, X = _setup(use_training_activations=True)
+        assert len(param._persistent_hooks) == 0  # none before capture
+        param.capture_initial(X)
+        # Should have hooks for all non-embedding PMs with inner modules,
+        # plus one pre-forward hook on the model that clears old activations
+        expected = 1 + sum(
+            1 for _, pm in param._pms
+            if pm.inner is not None and not isinstance(pm.inner, nn.Embedding)
+        )
+        assert len(param._persistent_hooks) == expected
+
+    def test_activations_captured_during_forward(self):
+        """After a forward pass, _latest_activations should be populated."""
+        model, param, optimizer, X = _setup(use_training_activations=True)
+        param.capture_initial(X)
+
+        # Run a training forward pass
+        model(X)
+
+        assert len(param._latest_activations) > 0
+        for name in param._latest_activations:
+            assert param._latest_activations[name].shape[0] <= param._sample_size
+
+    def test_step_without_sample_input(self):
+        """step() should work without sample_input when hooks are active."""
+        model, param, optimizer, X = _setup(use_training_activations=True)
+        param.capture_initial(X)
+
+        for _ in range(5):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+
+        # step() without sample_input — should use _latest_activations
+        param.step(optimizer=optimizer)
+
+        for g in param.param_groups:
+            if g.get("maxp_managed"):
+                assert g["lr"] > 0
+
+    def test_step_no_hooks_no_input_raises(self):
+        """step(None) without use_training_activations should raise."""
+        model, param, optimizer, X = _setup()
+        param.capture_initial(X)
+
+        for _ in range(3):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+
+        with pytest.raises(ValueError, match="sample_input is required"):
+            param.step(None, optimizer)
+
+    def test_step_no_forward_raises(self):
+        """step() without a prior forward pass should raise."""
+        model, param, optimizer, X = _setup(use_training_activations=True)
+        param.capture_initial(X)
+        # Clear activations from capture_initial's forward pass
+        param._latest_activations.clear()
+
+        with pytest.raises(RuntimeError, match="No activations captured"):
+            param.step(optimizer=optimizer)
+
+    def test_remove_hooks(self):
+        """remove_hooks() should clean up all hooks."""
+        model, param, optimizer, X = _setup(use_training_activations=True)
+        param.capture_initial(X)
+        assert len(param._persistent_hooks) > 0
+
+        param.remove_hooks()
+        assert len(param._persistent_hooks) == 0
+        assert len(param._latest_activations) == 0
+
+    def test_full_training_loop(self):
+        """Complete training loop with use_training_activations=True."""
+        model, param, optimizer, X = _setup(use_training_activations=True)
+        param.capture_initial(X)
+
+        for _ in range(10):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+            param.step(optimizer=optimizer)
+
+        for g in param.param_groups:
+            if g.get("maxp_managed"):
+                assert g["lr"] > 0
+
+        # Clean up
+        param.remove_hooks()
+
+
+# ---------------------------------------------------------------------------
+# Integration: all optimizations combined
+# ---------------------------------------------------------------------------
+
+class TestAllOptimizationsCombined:
+    """Test all optimizations working together."""
+
+    def test_all_opts_training_loop(self):
+        """Training loop with all optimizations enabled simultaneously."""
+        torch.manual_seed(0)
+        model = SimpleMLP(d=32)
+        param = Parametrization(
+            model, lr_prefactor=0.01,
+            solve_interval=3,
+            alignment_ema=0.5,
+            c_ema=0.5,
+            resample_w0=True,
+            use_training_activations=True,
+        )
+        X = torch.randn(8, 16)
+        param.capture_initial(X)
+        optimizer = torch.optim.Adam(param.param_groups)
+
+        for _ in range(15):
+            optimizer.zero_grad()
+            loss = model(X).sum()
+            loss.backward()
+            optimizer.step()
+            param.step(optimizer=optimizer)
+
+        # All LRs should be positive
+        for g in param.param_groups:
+            if g.get("maxp_managed"):
+                assert g["lr"] > 0
+        # Alignment values should be finite
+        for _, pm in param._pms:
+            if pm.weight is not None:
+                assert math.isfinite(pm.align_z0_dW)
+                assert math.isfinite(pm.align_dZ_w0)
+                assert math.isfinite(pm.align_dZ_dW)
+        # No _w0 stored
+        for _, pm in param._pms:
+            if pm.weight is not None:
+                assert pm._w0 is None
+
+        param.remove_hooks()
