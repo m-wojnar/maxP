@@ -76,7 +76,7 @@ SLURM_TEMPLATE = Template("""\
 #SBATCH --time ${wall_time}
 #SBATCH --account plgadlers-gpu-gh200
 #SBATCH --partition plgrid-gpu-gh200
-#SBATCH --gres gpu:{gpus_per_node}
+#SBATCH --gres gpu:${gpus_per_node}
 #SBATCH --output ${output_dir}/maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}.out
 #SBATCH --error  ${output_dir}/maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}.err
 
