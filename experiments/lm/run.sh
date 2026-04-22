@@ -26,11 +26,11 @@ case "$SCALE" in
     *)  echo "Unknown scale '$SCALE'. Choose from s1 s2 s3 s4 s5."; exit 1 ;;
 esac
 
-RUNS_DIR="${RUNS_DIR:-/net/storage/plgwifillm/maxP/runs}"
+RUNS_DIR="${RUNS_DIR:-/net/storage/pr3/plgrid/plggadlers/maxP/runs}"
 DATASET="${DATASET:-fineweb-edu}"
 HF_ASSETS_PATH="${HF_ASSETS_PATH:-$(pwd)/assets/hf/Llama-3.1-8B}"
-VENV_PATH="${VENV_PATH:-/net/storage/plgwifillm/maxP/.venv}"
-REPO_PATH="${REPO_PATH:-/net/storage/plgwifillm/maxP}"
+VENV_PATH="${VENV_PATH:-/net/storage/pr3/plgrid/plggadlers/maxP/.venv}"
+REPO_PATH="${REPO_PATH:-/net/storage/pr3/plgrid/plggadlers/maxP}"
 
 cd "$REPO_PATH"
 source "$VENV_PATH/bin/activate"

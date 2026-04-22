@@ -8,11 +8,11 @@ Usage:
         --methods maxP mup-full mup-no \\
         --lrs 3e-4 1e-3 3e-3 1e-2 3e-2 1e-1 3e-1 \\
         --seeds 1 2 \\
-        --runs-dir /net/storage/plgwifillm/maxP/runs \\
+        --runs-dir /net/storage/pr3/plgrid/plggadlers/maxP/runs \\
         --dataset HuggingFaceFW/fineweb-edu \\
-        --hf-assets-path /net/storage/plgwifillm/maxP/tokenizer \\
-        --venv-path /net/storage/plgwifillm/maxP/.venv \\
-        --repo-path /net/storage/plgwifillm/maxP \\
+        --hf-assets-path /net/storage/pr3/plgrid/plggadlers/maxP/tokenizer \\
+        --venv-path /net/storage/pr3/plgrid/plggadlers/maxP/.venv \\
+        --repo-path /net/storage/pr3/plgrid/plggadlers/maxP \\
         [--dry-run]
 
 Skips runs where outputs/<run_name>/checkpoint/step-<N>/ already exists.
@@ -76,7 +76,7 @@ SLURM_TEMPLATE = Template("""\
 #SBATCH --cpus-per-gpu 72
 #SBATCH --mem-per-gpu 118GB
 #SBATCH --time ${wall_time}
-#SBATCH --account plgwifillm-gpu-gh200
+#SBATCH --account plgadlers-gpu-gh200
 #SBATCH --partition plgrid-gpu-gh200
 #SBATCH --gres gpu:8
 #SBATCH --output ${output_dir}/slurm.out
@@ -87,7 +87,7 @@ source "${venv_path}/bin/activate"
 cd "${repo_path}"
 
 export OMP_NUM_THREADS=8
-export HF_DATASETS_CACHE="$${HF_DATASETS_CACHE:-/net/storage/plgwifillm/maxP/hf_cache}"
+export HF_DATASETS_CACHE="$${HF_DATASETS_CACHE:-/net/storage/pr3/plgrid/plggadlers/maxP/hf_cache}"
 export WANDB_PROJECT="$${WANDB_PROJECT:-maxP-lm}"
 export WANDB_RUN_NAME="maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}"
 
