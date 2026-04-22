@@ -76,16 +76,16 @@ SLURM_TEMPLATE = Template("""\
 #SBATCH --time ${wall_time}
 #SBATCH --account plgadlers-gpu-gh200
 #SBATCH --partition plgrid-gpu-gh200
-#SBATCH --gres gpu:8
-#SBATCH --output ${output_dir}/slurm.out
-#SBATCH --error  ${output_dir}/slurm.err
+#SBATCH --gres gpu:{gpus_per_node}
+#SBATCH --output ${output_dir}/maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}.out
+#SBATCH --error  ${output_dir}/maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}.err
 
 module add ML-bundle/25.10
 source "${venv_path}/bin/activate"
 cd "${repo_path}"
 
 export OMP_NUM_THREADS=8
-export HF_DATASETS_CACHE="$${HF_DATASETS_CACHE:-/net/storage/pr3/plgrid/plggadlers/maxP/hf_cache}"
+export HF_DATASETS_CACHE="$${HF_DATASETS_CACHE:-/net/storage/pr3/plgrid/plggadlers/hf_cache}"
 export WANDB_PROJECT="$${WANDB_PROJECT:-maxP-lm}"
 export WANDB_RUN_NAME="maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}"
 
@@ -125,7 +125,7 @@ def main() -> None:
                    help="Override seed list (default: per-scale defaults)")
     p.add_argument("--batch-size", type=int, default=8,
                    help="Local batch size per GPU")
-    p.add_argument("--gpus-per-node", type=int, default=8,
+    p.add_argument("--gpus-per-node", type=int, default=1,
                    help="GPUs per SLURM node (also sets --nproc_per_node)")
     p.add_argument("--runs-dir", required=True, help="Root directory for run outputs")
     p.add_argument("--dataset", required=True,
