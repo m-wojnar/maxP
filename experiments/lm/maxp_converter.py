@@ -169,5 +169,5 @@ def post_optimizer_build_fn(optimizers, model_parts: list[nn.Module], parallel_d
         param_groups = getattr(model, "_maxp_param_groups", None)
         if param_groups is None:
             continue
-        non_lr_defaults = {k: v for k, v in optimizer.defaults.items() if k != "lr"}
+        non_lr_defaults = {k: v for k, v in optimizer.param_groups[0].items() if k != "lr" and k != "params"}
         optimizer.param_groups[:] = [{**g, **non_lr_defaults} for g in param_groups]

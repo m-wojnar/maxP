@@ -136,7 +136,7 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
             implementation="foreach" if is_debug else "fused",
         ),
         lr_scheduler=LRSchedulersContainer.Config(
-            warmup_steps=10 if is_debug else 2000,
+            warmup_steps=10 if is_debug else int(0.1 * steps),
             decay_ratio=0.1,
         ),
         training=TrainingConfig(

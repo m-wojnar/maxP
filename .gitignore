@@ -210,6 +210,7 @@ data
 jobs
 outputs
 assets
+runs
 
 # Generated plots
 *.png
