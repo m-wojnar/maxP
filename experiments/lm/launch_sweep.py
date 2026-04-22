@@ -10,7 +10,7 @@ Usage:
         --seeds 1 2 \\
         --runs-dir /net/storage/pr3/plgrid/plggadlers/maxP/runs \\
         --dataset HuggingFaceFW/fineweb-edu \\
-        --hf-assets-path /net/storage/pr3/plgrid/plggadlers/maxP/tokenizer \\
+        --hf-assets-path /net/storage/pr3/plgrid/plggadlers/maxP/experiments/lm/assets/hf/Llama-3.1-8B \\
         --venv-path /net/storage/pr3/plgrid/plggadlers/maxP/.venv \\
         --repo-path /net/storage/pr3/plgrid/plggadlers/maxP \\
         [--dry-run] [--resume]
@@ -85,7 +85,7 @@ source "${venv_path}/bin/activate"
 cd "${repo_path}"
 
 export OMP_NUM_THREADS=8
-export HF_DATASETS_CACHE="$${HF_DATASETS_CACHE:-/net/storage/pr3/plgrid/plggadlers/hf_cache}"
+export HF_HOME="$${HF_HOME:-/net/storage/pr3/plgrid/plggadlers/hf_cache}"
 export WANDB_PROJECT="$${WANDB_PROJECT:-maxP-lm}"
 export WANDB_RUN_NAME="maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}"
 
