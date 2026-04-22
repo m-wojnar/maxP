@@ -125,7 +125,7 @@ def _make_model_config(
 #   debug: tiny 4-layer (CPU smoke tests, vocab=2048)
 #   s1:  ~21M   s2: ~81M   s3: ~218M   s4: ~1.09B   s5: ~2.71B
 SCALE_CONFIGS: dict[str, dict] = {
-    "debug": dict(dim=256, n_layers=4, n_heads=4, n_kv_heads=2, vocab_size=2048),
+    "debug": dict(dim=256, n_layers=4, n_heads=4, n_kv_heads=2),
     "s1": dict(dim=512, n_layers=6, n_heads=8, n_kv_heads=4),
     "s2": dict(dim=768, n_layers=10, n_heads=12, n_kv_heads=4),
     "s3": dict(dim=1024, n_layers=16, n_heads=16, n_kv_heads=4),
