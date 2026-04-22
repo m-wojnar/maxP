@@ -4,7 +4,7 @@ Import this module before building any Trainer.Config that uses
 --dataset fineweb-edu or --dataset fineweb-edu-10bt.
 
 FineWeb-Edu is streamed directly from HuggingFace (or from a local cache
-if HF_DATASETS_CACHE is set). No pre-tokenization step is needed.
+if HF_HOME is set). No pre-tokenization step is needed.
 torchtitan tokenizes on-the-fly with the LLaMA-3 tokenizer.
 """
 

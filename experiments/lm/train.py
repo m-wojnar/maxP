@@ -113,12 +113,7 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
     model_spec = maxp_model_registry(
         scale=args.scale,
         method=args.method,
-        lr_prefactor=args.lr,
         attn_backend="sdpa",
-        alignment_warmup=args.alignment_warmup,
-        solve_interval=args.solve_interval,
-        sample_size=args.sample_size,
-        c_ema=args.c_ema,
     )
 
     return Trainer.Config(
@@ -126,7 +121,14 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
         hf_assets_path=args.hf_assets_path,
         dump_folder=args.output_dir,
         model_converters=ModelConvertersContainer.Config(
-            converters=[MaxPConverter.Config()],
+            converters=[MaxPConverter.Config(
+                method=args.method,
+                lr_prefactor=args.lr,
+                alignment_warmup=args.alignment_warmup,
+                solve_interval=args.solve_interval,
+                sample_size=args.sample_size,
+                c_ema=args.c_ema,
+            )],
         ),
         optimizer=OptimizersContainer.Config(
             lr=args.lr,

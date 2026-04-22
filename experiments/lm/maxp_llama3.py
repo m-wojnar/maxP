@@ -18,7 +18,7 @@ from torchtitan.models.llama3.model import Llama3Model, Llama3TransformerBlock
 from torchtitan.models.llama3.state_dict_adapter import Llama3StateDictAdapter
 from torchtitan.protocols.model_spec import ModelSpec
 
-from maxp_converter import make_post_optimizer_build_fn
+from maxp_converter import post_optimizer_build_fn
 
 
 # Weight inits — mirrors llama3 upstream defaults
@@ -134,28 +134,17 @@ SCALE_CONFIGS: dict[str, dict] = {
 }
 
 
-def maxp_model_registry(
-    scale: str,
-    method: str,
-    lr_prefactor: float,
-    attn_backend: str = "sdpa",
-    alignment_warmup: int = 10,
-    solve_interval: int = 100,
-    sample_size: int = 32,
-    c_ema: float = 0.0,
-) -> ModelSpec:
+def maxp_model_registry(scale: str, method: str, attn_backend: str = "sdpa") -> ModelSpec:
     """Build a ModelSpec for maxP LLaMA-3 training.
+
+    Parametrization config (alignment_warmup, solve_interval, etc.) lives in
+    MaxPConverter.Config and is passed via Trainer.Config.model_converters.
 
     Args:
         scale: One of "debug", "s1" … "s5".
         method: "maxP" (dynamic), "mup-full" (static, full align), or
             "mup-no" (static, no align).
-        lr_prefactor: Base LR multiplier; per-layer LRs scale from this.
         attn_backend: Attention backend ("sdpa", "flex", "varlen").
-        alignment_warmup: Steps before first LP re-solve (maxP only).
-        solve_interval: Re-solve LP every N steps (maxP only).
-        sample_size: Sequences for alignment measurement (maxP only).
-        c_ema: EMA smoothing for c values toward LP targets (maxP only).
     """
     if scale not in SCALE_CONFIGS:
         raise ValueError(f"Unknown scale '{scale}'. Choose from {list(SCALE_CONFIGS)}")
@@ -170,14 +159,7 @@ def maxp_model_registry(
         parallelize_fn=parallelize_llama,
         pipelining_fn=pipeline_llm,
         build_loss_fn=build_cross_entropy_loss,
-        post_optimizer_build_fn=make_post_optimizer_build_fn(
-            method=method,
-            lr_prefactor=lr_prefactor,
-            alignment_warmup=alignment_warmup,
-            solve_interval=solve_interval,
-            sample_size=sample_size,
-            c_ema=c_ema,
-        ),
+        post_optimizer_build_fn=post_optimizer_build_fn,
         state_dict_adapter=Llama3StateDictAdapter,
     )
 

@@ -24,11 +24,8 @@ class LlamaParametrizedModule(Module, ParametrizedModule):
 def _wrap(parent: nn.Module, attr: str, width_dim: int, layer_type: str, **pm_kw) -> None:
     """Replace parent.<attr> with a LlamaParametrizedModule in-place."""
     layer = getattr(parent, attr)
-    setattr(
-        parent,
-        attr,
-        LlamaParametrizedModule(layer, width_dim=width_dim, layer_type=layer_type, **pm_kw),
-    )
+    setattr(parent, attr, LlamaParametrizedModule(layer, width_dim=width_dim, layer_type=layer_type, **pm_kw))
+
 
 class _SDPAWrapper(Module):
     """Route q, k through a readout PM so the graph matches
@@ -93,17 +90,22 @@ def install_pm_wrappers(model: nn.Module) -> None:
 
 
 class MaxPConverter(Configurable, ModelConverter):
-    """ModelConverter that installs LlamaParametrizedModule wrappers on a LLaMA-3 model.
+    """Installs PM wrappers and runs maxP parametrization before model compilation.
 
-    install_pm_wrappers() is called during convert() while the model is still
-    on meta device — purely structural, no tensor operations.
-    Parametrization() (LP solve + weight reinit) runs later in post_optimizer_build_fn,
-    after init_weights() has materialized real tensors.
+    convert() wraps layers and calls Parametrization (LP solve + weight reinit)
+    so forward hooks are correctly traced by torch.compile.
+    post_optimizer_build_fn() (returned by make_post_optimizer_build_fn) patches
+    optimizer param_groups with per-layer LRs after optimizer.build().
     """
 
     @dataclass(kw_only=True, slots=True)
     class Config(Configurable.Config):
-        pass
+        method: str = "maxP"          # "maxP" | "mup-full" | "mup-no"
+        lr_prefactor: float = 1e-3
+        alignment_warmup: int = 10    # maxP only
+        solve_interval: int = 100     # maxP only
+        sample_size: int = 32         # maxP only
+        c_ema: float = 0.0            # maxP only
 
     def __init__(
         self,
@@ -112,13 +114,32 @@ class MaxPConverter(Configurable, ModelConverter):
         parallel_dims: ParallelDims,
         model_compile_enabled: bool,
     ) -> None:
-        pass  # stateless
+        self._cfg = config
 
     def convert(self, model: nn.Module) -> None:
         install_pm_wrappers(model)
+        cfg = self._cfg
+        param = Parametrization(
+            model,
+            sample_input=_make_sample_input(model),
+            alignment="full" if "full" in cfg.method else "no",
+            lr_prefactor=cfg.lr_prefactor,
+            warmup_steps=cfg.alignment_warmup,
+            solve_interval=cfg.solve_interval,
+            sample_size=cfg.sample_size,
+            c_ema=cfg.c_ema,
+        )
+        model._maxp_param_groups = param.param_groups
+        if cfg.method == "maxP":
+            model._maxp_param = param
+            model._maxp_align = {
+                name: (pm.align_z0_dW, pm.align_dZ_w0, pm.align_dZ_dW)
+                for name, pm in param._pms
+                if pm.weight is not None and pm.align_z0_dW is not None
+            }
 
     def post_optimizer_hook(self, model: nn.Module | list[nn.Module]) -> None:
-        pass  # static maxP: no dynamic re-solve after optimizer steps
+        pass
 
 
 def _make_sample_input(model: nn.Module) -> torch.Tensor | None:
@@ -139,74 +160,14 @@ def _make_sample_input(model: nn.Module) -> torch.Tensor | None:
     return torch.randint(0, vocab_size, (1, 16), generator=gen).to(device)
 
 
-def make_post_optimizer_build_fn(
-    method: str,
-    lr_prefactor: float,
-    alignment_warmup: int = 10,
-    solve_interval: int = 100,
-    sample_size: int = 32,
-    c_ema: float = 0.0,
-) -> Callable:
-    """Return a post_optimizer_build_fn for maxP initialization.
-
-    The returned function is called by Trainer after init_weights() and
-    optimizer.build(), but before lr_scheduler.build().  It runs
-    Parametrization (LP solve + weight reinit) and replaces each inner
-    AdamW's param_groups with maxP per-layer groups, so LRSchedulersContainer
-    records our per-layer initial_lr values correctly.
-
-    For method="maxP" (dynamic), the Parametrization object is stored on the
-    model as ``_maxp_param`` so MaxPTrainer.train_step can call param.step()
-    each iteration.  For "mup-full"/"mup-no" (static), LP is solved once
-    and never updated.
-
-    Args:
-        method: "maxP" (dynamic), "mup-full" (static, full align), or
-            "mup-no" (static, no align).
-        lr_prefactor: Base LR multiplier (e.g. 1e-3).
-        alignment_warmup: Steps before first dynamic re-solve (maxP only).
-        solve_interval: Re-solve LP every N steps (maxP only).
-        sample_size: Number of sequences for alignment measurement (maxP only).
-        c_ema: EMA smoothing for c values toward LP targets (maxP only).
+def post_optimizer_build_fn(optimizers, model_parts: list[nn.Module], parallel_dims: ParallelDims) -> None:
+    """Called by Trainer after init_weights() and optimizer.build(). 
+    
+    Reads param_groups set by MaxPConverter.convert().
     """
-    is_dynamic = method == "maxP"
-    alignment = "no" if method == "mup-no" else "full"
-
-    def fn(
-        optimizers,
-        model_parts: list[nn.Module],
-        parallel_dims: ParallelDims,
-    ) -> None:
-        for i, model in enumerate(model_parts):
-            sample_input = _make_sample_input(model)
-            param = Parametrization(
-                model,
-                sample_input=sample_input,
-                alignment=alignment,
-                lr_prefactor=lr_prefactor,
-                warmup_steps=alignment_warmup if is_dynamic else 0,
-                solve_interval=solve_interval,
-                sample_size=sample_size,
-                c_ema=c_ema,
-            )
-            optimizer = optimizers.optimizers[i]
-            non_lr_defaults = {k: v for k, v in optimizer.defaults.items() if k != "lr"}
-            merged = [
-                {"params": g["params"], "lr": g["lr"],
-                 "layer_name": g.get("layer_name", "_other"), **non_lr_defaults}
-                for g in param.param_groups
-            ]
-            # Replace the inner AdamW's param_groups in-place.
-            # LRSchedulersContainer (built next) records these as initial_lr.
-            optimizer.param_groups[:] = merged
-
-            if is_dynamic:
-                model._maxp_param = param
-
-            model._maxp_align = {
-                name: (pm.align_z0_dW, pm.align_dZ_w0, pm.align_dZ_dW)
-                for name, pm in param._pms
-                if pm.weight is not None and pm.align_z0_dW is not None
-            }
-
-    return fn
+    for optimizer, model in zip(optimizers, model_parts):
+        param_groups = getattr(model, "_maxp_param_groups", None)
+        if param_groups is None:
+            continue
+        non_lr_defaults = {k: v for k, v in optimizer.defaults.items() if k != "lr"}
+        optimizer.param_groups[:] = [{**g, **non_lr_defaults} for g in param_groups]
