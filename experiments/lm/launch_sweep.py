@@ -89,7 +89,7 @@ export HF_HOME="$${HF_HOME:-/net/storage/pr3/plgrid/plggadlers/hf_cache}"
 export WANDB_PROJECT="$${WANDB_PROJECT:-maxP-lm}"
 export WANDB_RUN_NAME="maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}"
 
-torchrun --nproc_per_node=${gpus_per_node} experiments/lm/train.py \\
+torchrun --nproc_per_node=${gpus_per_node} --master_port=0 experiments/lm/train.py \\
     --scale ${scale} \\
     --method ${method} \\
     --lr ${lr} \\

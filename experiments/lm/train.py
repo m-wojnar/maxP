@@ -143,6 +143,7 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
             local_batch_size=2 if is_debug else args.batch_size,
             seq_len=args.seq_len,
             steps=steps,
+            dtype="bfloat16",
         ),
         dataloader=HuggingFaceTextDataLoader.Config(
             dataset=args.dataset,

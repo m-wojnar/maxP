@@ -64,7 +64,7 @@ TRAIN_ARGS=(
 
 if [[ "${GPUS}" -eq 1 ]]; then
     # Single GPU: run python directly so logs stream to terminal
-    LOCAL_RANK=0 RANK=0 WORLD_SIZE=1 MASTER_ADDR=localhost MASTER_PORT=29500 \
+    LOCAL_RANK=0 RANK=0 WORLD_SIZE=1 MASTER_ADDR=localhost MASTER_PORT=0 \
         python experiments/lm/train.py "${TRAIN_ARGS[@]}"
 else
     # Multi-GPU: use torchrun
