@@ -11,20 +11,26 @@ import torch.nn as nn
 from torchtitan.config import Configurable
 from torchtitan.distributed import ParallelDims
 from torchtitan.protocols.model_converter import ModelConverter
+from torchtitan.protocols.module import Module
 
 from maxp import ParametrizedModule, Parametrization
 
 
+class LlamaParametrizedModule(Module, ParametrizedModule):
+    """Marker class for ParametrizedModules in LLaMA-3 models."""
+    pass
+
+
 def _wrap(parent: nn.Module, attr: str, width_dim: int, layer_type: str, **pm_kw) -> None:
-    """Replace parent.<attr> with a ParametrizedModule in-place."""
+    """Replace parent.<attr> with a LlamaParametrizedModule in-place."""
     layer = getattr(parent, attr)
     setattr(
         parent,
         attr,
-        ParametrizedModule(layer, width_dim=width_dim, layer_type=layer_type, **pm_kw),
+        LlamaParametrizedModule(layer, width_dim=width_dim, layer_type=layer_type, **pm_kw),
     )
 
-class _SDPAWrapper(nn.Module):
+class _SDPAWrapper(Module):
     """Route q, k through a readout PM so the graph matches
     attn_score topology: r = min(min(r_q, r_k) + a, r_v).
     scale_output is set to False as PM returns a tuple that shouldn't be
@@ -34,7 +40,7 @@ class _SDPAWrapper(nn.Module):
     def __init__(self, inner, head_dim):
         super().__init__()
         self.inner = inner
-        self.score = ParametrizedModule(
+        self.score = LlamaParametrizedModule(
             lambda q, k: (q, k), width_dim=head_dim,
             layer_type="readout", scale_output=False,
         )
@@ -46,7 +52,7 @@ class _SDPAWrapper(nn.Module):
 
 
 def install_pm_wrappers(model: nn.Module) -> None:
-    """Install ParametrizedModule wrappers on all LLaMA-3 layers in-place.
+    """Install LlamaParametrizedModule wrappers on all LLaMA-3 layers in-place.
 
     Purely structural — safe to call on a meta-device model.
     Wraps attention projections, FFN weights, token embedding, and LM head.
@@ -87,7 +93,7 @@ def install_pm_wrappers(model: nn.Module) -> None:
 
 
 class MaxPConverter(Configurable, ModelConverter):
-    """ModelConverter that installs ParametrizedModule wrappers on a LLaMA-3 model.
+    """ModelConverter that installs LlamaParametrizedModule wrappers on a LLaMA-3 model.
 
     install_pm_wrappers() is called during convert() while the model is still
     on meta device — purely structural, no tensor operations.

@@ -155,7 +155,7 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
             interval=500,
             last_save_model_only=False,
         ),
-        compile=CompileConfig(enable=not is_debug),
+        compile=CompileConfig(enable=True),
         activation_checkpoint=ActivationCheckpointConfig(mode="selective"),
         debug=DebugConfig(seed=args.seed),
         validator=Validator.Config(

@@ -10,26 +10,14 @@ import torch.nn as nn
 
 from torchtitan.components.loss import build_cross_entropy_loss
 from torchtitan.distributed.pipeline_parallel import pipeline_llm
-from torchtitan.models.common import (
-    Embedding,
-    Linear,
-    RMSNorm,
-    RoPE,
-    compute_ffn_hidden_dim,
-)
-from torchtitan.models.common.config_utils import (
-    get_attention_config,
-    make_ffn_config,
-    make_gqa_config,
-)
+from torchtitan.models.common import Embedding, Linear, RMSNorm, RoPE, compute_ffn_hidden_dim
+from torchtitan.models.common.config_utils import get_attention_config, make_ffn_config, make_gqa_config
 from torchtitan.models.common.param_init import depth_scaled_std
 from torchtitan.models.llama3 import parallelize_llama
 from torchtitan.models.llama3.model import Llama3Model, Llama3TransformerBlock
 from torchtitan.models.llama3.state_dict_adapter import Llama3StateDictAdapter
 from torchtitan.protocols.model_spec import ModelSpec
-from torchtitan.protocols.module import Module
 
-from maxp import ParametrizedModule
 from maxp_converter import make_post_optimizer_build_fn
 
 
@@ -89,32 +77,6 @@ def _build_layers(
     ]
 
 
-class MaxPLlama3Model(Llama3Model):
-    """Llama3Model that permits ParametrizedModule wrappers in verify_module_protocol.
-
-    ParametrizedModule is an nn.Module (not a torchtitan Module), so the base
-    verify_module_protocol() would reject it.  We skip ParametrizedModule instances
-    since they wrap a real torchtitan Module internally.
-    """
-
-    @dataclass(kw_only=True, slots=True)
-    class Config(Llama3Model.Config):
-        pass
-
-    def verify_module_protocol(self) -> None:
-        failures: list[tuple[str, str]] = []
-        for fqn, mod in self.named_modules():
-            if isinstance(mod, ParametrizedModule):
-                continue  # wraps a torchtitan Module internally
-            if not isinstance(mod, Module):
-                failures.append((fqn, type(mod).__name__))
-        if failures:
-            details = ", ".join(f"'{fqn}' ({cls})" for fqn, cls in failures)
-            raise RuntimeError(
-                f"The following modules do not satisfy the Module protocol: {details}"
-            )
-
-
 def _make_model_config(
     *,
     dim: int,
@@ -123,9 +85,9 @@ def _make_model_config(
     n_kv_heads: int,
     vocab_size: int = 128256,
     attn_backend: str = "sdpa",
-) -> MaxPLlama3Model.Config:
+) -> Llama3Model.Config:
     hidden_dim = compute_ffn_hidden_dim(dim, multiple_of=256, ffn_dim_multiplier=1.3)
-    return MaxPLlama3Model.Config(
+    return Llama3Model.Config(
         dim=dim,
         vocab_size=vocab_size,
         enable_weight_tying=False,
@@ -240,7 +202,7 @@ def compute_steps(
     arch_kwargs = {k: v for k, v in cfg.items() if k != "vocab_size"}
     model_config = _make_model_config(vocab_size=vocab_size, **arch_kwargs)
     with torch.device("meta"):
-        model = MaxPLlama3Model(model_config)
+        model = Llama3Model(model_config)
     total = sum(p.numel() for p in model.parameters())
     non_embed = total - 2 * vocab_size * dim  # tok_embeddings + LM head
     tokens = token_multiplier * non_embed
