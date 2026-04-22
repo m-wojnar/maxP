@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate and submit SLURM jobs for the full LM sweep.
 
-Usage::
+Usage:
 
     python experiments/lm/launch_sweep.py \\
         --scale s3 \\

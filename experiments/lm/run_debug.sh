@@ -15,9 +15,10 @@ STEPS="${STEPS:-20}"
 SCALE="${SCALE:-debug}"
 METHOD="${METHOD:-mup-no}"
 GPUS="${GPUS:-1}"
+DATASET="${DATASET:-c4_test}"
 OUTPUT_DIR="${OUTPUT_DIR:-/tmp/maxp_debug}"
-TOKENIZER="${TOKENIZER:-}"
-C4_TEST="${C4_TEST:-}"
+TOKENIZER="${TOKENIZER:-${REPO}/experiments/lm/assets/hf/Llama-3.1-8B}"
+C4_TEST="${C4_TEST:-${REPO}/experiments/lm/assets/c4_test}"
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
@@ -26,6 +27,7 @@ while [[ $# -gt 0 ]]; do
         --scale)      SCALE="$2";      shift 2 ;;
         --method)     METHOD="$2";     shift 2 ;;
         --gpus)       GPUS="$2";       shift 2 ;;
+        --dataset)    DATASET="$2";    shift 2 ;;
         --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
         --tokenizer)  TOKENIZER="$2";  shift 2 ;;
         --c4-test)    C4_TEST="$2";    shift 2 ;;
@@ -41,6 +43,7 @@ export OMP_NUM_THREADS=4
 echo "=== maxP debug run ==="
 echo "  scale:      ${SCALE}"
 echo "  method:     ${METHOD}"
+echo "  dataset:    ${DATASET}"
 echo "  steps:      ${STEPS}"
 echo "  gpus:       ${GPUS}"
 echo "  output_dir: ${OUTPUT_DIR}"
@@ -53,7 +56,7 @@ TRAIN_ARGS=(
     --method "${METHOD}"
     --lr 1e-3
     --steps "${STEPS}"
-    --dataset c4_test
+    --dataset "${DATASET}"
     ${C4_TEST:+--dataset-path "${C4_TEST}"}
     ${TOKENIZER:+--hf-assets-path "${TOKENIZER}"}
     --output-dir "${OUTPUT_DIR}"

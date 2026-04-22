@@ -26,6 +26,9 @@ class ParametrizedModule(nn.Module):
         c: Optional override for the learning rate exponent.
             If set, :class:`Parametrization` will use this value instead of
             solving for it via LP.
+        scale_output: If ``False``, the solved multiplier is not physically
+            applied to the output tensor in ``forward()``.  Useful for ops
+            that handle scaling internally (like SDPA via the ``scale`` arg).
 
     Attributes:
         inner: The wrapped ``nn.Module``, or ``None`` for bare callables.
@@ -45,6 +48,7 @@ class ParametrizedModule(nn.Module):
         a: float | None = None,
         b: float | None = None,
         c: float | None = None,
+        scale_output: bool = True,
     ):
         super().__init__()
         if isinstance(module_or_fn, nn.Module):
@@ -55,6 +59,7 @@ class ParametrizedModule(nn.Module):
         self.width_dim = width_dim
         self.layer_type = layer_type
         self.scale = 1.0
+        self.scale_output = scale_output
 
         # Per-PM (a, b, c) overrides — Parametrization respects these if set
         self.a: float | None = a
@@ -87,4 +92,8 @@ class ParametrizedModule(nn.Module):
             out = self.inner(*args, **kwargs)
         else:
             out = self._fn(*args, **kwargs)
-        return self.scale * out
+        
+        if self.scale_output:
+            return self.scale * out
+        else:
+            return out

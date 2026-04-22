@@ -209,6 +209,7 @@ __marimo__/
 data
 jobs
 outputs
+assets
 
 # Generated plots
 *.png

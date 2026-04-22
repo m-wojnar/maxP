@@ -24,6 +24,26 @@ def _wrap(parent: nn.Module, attr: str, width_dim: int, layer_type: str, **pm_kw
         ParametrizedModule(layer, width_dim=width_dim, layer_type=layer_type, **pm_kw),
     )
 
+class _SDPAWrapper(nn.Module):
+    """Route q, k through a readout PM so the graph matches
+    attn_score topology: r = min(min(r_q, r_k) + a, r_v).
+    scale_output is set to False as PM returns a tuple that shouldn't be
+    scalar-multiplied; the physical pm.scale = head_dim^-a is instead
+    injected into SDPA's `scale` kwarg (applied to logits before softmax).
+    """
+    def __init__(self, inner, head_dim):
+        super().__init__()
+        self.inner = inner
+        self.score = ParametrizedModule(
+            lambda q, k: (q, k), width_dim=head_dim,
+            layer_type="readout", scale_output=False,
+        )
+
+    def forward(self, q, k, v, **kw):
+        q, k = self.score(q, k)
+        kw.pop("scale", None)
+        return self.inner(q, k, v, scale=self.score.scale, **kw)
+
 
 def install_pm_wrappers(model: nn.Module) -> None:
     """Install ParametrizedModule wrappers on all LLaMA-3 layers in-place.
@@ -55,13 +75,7 @@ def install_pm_wrappers(model: nn.Module) -> None:
 
         _wrap(attn, "wo", d_model, "hidden")
 
-        # SDPA already scales by 1/sqrt(head_dim), so set a=0 to avoid double-scaling
-        attn.inner_attention = ParametrizedModule(
-            attn.inner_attention,
-            width_dim=head_dim,
-            layer_type="readout",
-            a=0.0,
-        )
+        attn.inner_attention = _SDPAWrapper(attn.inner_attention, head_dim)
 
         d_ff: int = ffn.w1.out_features
         _wrap(ffn, "w1", d_model, "hidden")
