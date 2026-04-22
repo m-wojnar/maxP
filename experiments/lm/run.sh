@@ -2,15 +2,15 @@
 # Submit a full sweep for one scale.
 #
 # Usage:
-#   bash experiments/lm/slurm/run.sh s3 [launch_sweep.py flags …]
+#   bash experiments/lm/run.sh s3 [launch_sweep.py flags …]
 #
 # Per-scale defaults (seeds, LRs, methods) match experiments.md §4.1.
 # Override any of them by passing extra flags after the scale argument.
 #
 # Examples:
-#   bash experiments/lm/slurm/run.sh s3
-#   bash experiments/lm/slurm/run.sh s5 --lrs 3e-3   # transfer LR
-#   bash experiments/lm/slurm/run.sh s2 --dry-run
+#   bash experiments/lm/run.sh s3
+#   bash experiments/lm/run.sh s5 --lrs 3e-3   # transfer LR
+#   bash experiments/lm/run.sh s2 --dry-run
 set -euo pipefail
 
 SCALE="${1:?Usage: $0 <s1|s2|s3|s4|s5> [extra launch_sweep.py flags]}"

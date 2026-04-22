@@ -13,21 +13,19 @@ Usage:
         --hf-assets-path /net/storage/pr3/plgrid/plggadlers/maxP/tokenizer \\
         --venv-path /net/storage/pr3/plgrid/plggadlers/maxP/.venv \\
         --repo-path /net/storage/pr3/plgrid/plggadlers/maxP \\
-        [--dry-run]
+        [--dry-run] [--resume]
 
-Skips runs where outputs/<run_name>/checkpoint/step-<N>/ already exists.
+By default skips runs where any checkpoint already exists (started or completed).
+With --resume, submits all runs regardless (to resume interrupted training).
 """
 
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 from datetime import date
 from pathlib import Path
 from string import Template
-
-from maxp_llama3 import compute_steps
 
 
 # ---------------------------------------------------------------------------
@@ -111,10 +109,9 @@ def _method_tag(method: str) -> str:
     return method.replace("-", "")
 
 
-def _run_complete(out_dir: Path, steps: int) -> bool:
-    """True if a checkpoint at the final step already exists."""
-    ckpt_dir = out_dir / "checkpoint" / f"step-{steps}"
-    return ckpt_dir.exists()
+def _has_checkpoint(out_dir: Path) -> bool:
+    ckpt_dir = out_dir / "checkpoint"
+    return ckpt_dir.is_dir() and any(ckpt_dir.iterdir())
 
 
 def main() -> None:
@@ -130,7 +127,6 @@ def main() -> None:
                    help="Local batch size per GPU")
     p.add_argument("--gpus-per-node", type=int, default=8,
                    help="GPUs per SLURM node (also sets --nproc_per_node)")
-    p.add_argument("--seq-len", type=int, default=2048)
     p.add_argument("--runs-dir", required=True, help="Root directory for run outputs")
     p.add_argument("--dataset", required=True,
                    help="HuggingFace dataset name (e.g. HuggingFaceFW/fineweb-edu)")
@@ -140,6 +136,8 @@ def main() -> None:
     p.add_argument("--repo-path", required=True, help="Path to maxP repo root")
     p.add_argument("--dry-run", action="store_true",
                    help="Print sbatch commands without submitting")
+    p.add_argument("--resume", action="store_true",
+                   help="Submit all runs even if a checkpoint exists (resume interrupted training)")
     args = p.parse_args()
 
     scale = args.scale
@@ -147,8 +145,6 @@ def main() -> None:
     methods = args.methods or SCALE_METHODS[scale]
     lrs = args.lrs or (S5_SINGLE_LR if scale == "s5" else ALL_LRS)
     seeds = args.seeds or SCALE_SEEDS[scale]
-    world_size = sc["nodes"] * args.gpus_per_node
-    steps = compute_steps(scale, args.seq_len, args.batch_size, world_size)
 
     today = date.today().strftime("%Y-%m-%d")
     submitted = skipped = 0
@@ -161,7 +157,7 @@ def main() -> None:
                 )
                 out_dir = Path(args.runs_dir) / run_name
 
-                if _run_complete(out_dir, steps):
+                if not args.resume and _has_checkpoint(out_dir):
                     print(f"[skip]   {run_name}")
                     skipped += 1
                     continue
