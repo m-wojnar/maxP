@@ -160,6 +160,7 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
             interval=5000,
             last_save_model_only=False,
             keep_latest_k=1,
+            async_mode="async",
         ),
         compile=CompileConfig(enable=not is_debug),
         activation_checkpoint=ActivationCheckpointConfig(mode="full"),
@@ -187,7 +188,7 @@ def parse_args() -> argparse.Namespace:
                    help="Steps before first LP re-solve (maxP only)")
     p.add_argument("--solve-interval", type=int, default=200,
                    help="Re-solve LP every N steps (maxP only)")
-    p.add_argument("--sample-size", type=int, default=128,
+    p.add_argument("--sample-size", type=int, default=8,
                    help="Sequences for alignment measurement (maxP only)")
     p.add_argument("--c-ema", type=float, default=0.0,
                    help="EMA smoothing for c values (maxP only)")
