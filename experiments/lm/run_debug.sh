@@ -11,9 +11,9 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 VENV="${REPO}/.venv"
 
 # Defaults — override with env vars or flags
-STEPS="${STEPS:-20}"
+STEPS="${STEPS:-200}"
 SCALE="${SCALE:-debug}"
-METHOD="${METHOD:-mup-no}"
+METHOD="${METHOD:-maxP}"
 GPUS="${GPUS:-1}"
 DATASET="${DATASET:-c4_test}"
 OUTPUT_DIR="${OUTPUT_DIR:-/tmp/maxp_debug}"
@@ -67,6 +67,8 @@ TRAIN_ARGS=(
     --lr 0.03
     --alignment-warmup 20
     --solve-interval 5
+    --batch-size 4
+    --seq-len 256
     --steps "${STEPS}"
     --dataset "${DATASET}"
     ${C4_TEST:+--dataset-path "${C4_TEST}"}

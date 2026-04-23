@@ -20,6 +20,7 @@ import argparse
 import os
 
 import torch
+torch._dynamo.config.recompile_limit = 100
 
 from torchtitan.components.checkpoint import CheckpointManager
 from torchtitan.components.lr_scheduler import LRSchedulersContainer
