@@ -89,7 +89,18 @@ export HF_HOME="$${HF_HOME:-/net/storage/pr3/plgrid/plggadlers/hf_cache}"
 export WANDB_PROJECT="$${WANDB_PROJECT:-maxP-lm}"
 export WANDB_RUN_NAME="maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}"
 
-torchrun --nproc_per_node=${gpus_per_node} --master_port=0 experiments/lm/train.py \\
+# Distributed setup
+find_free_port() {
+    python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()'
+}
+
+export MASTER_ADDR=127.0.0.1
+export MASTER_PORT=$$(find_free_port)
+export NCCL_SOCKET_IFNAME=lo
+
+echo "Master Port: $${MASTER_PORT}"
+
+torchrun --nproc_per_node=${gpus_per_node} --master_addr=$${MASTER_ADDR} --master_port=$${MASTER_PORT} experiments/lm/train.py \\
     --scale ${scale} \\
     --method ${method} \\
     --lr ${lr} \\

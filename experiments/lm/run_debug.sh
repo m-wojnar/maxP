@@ -40,6 +40,15 @@ cd "${REPO}"
 
 export OMP_NUM_THREADS=4
 
+# Distributed setup
+find_free_port() {
+    python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()'
+}
+
+export MASTER_ADDR=127.0.0.1
+export MASTER_PORT=$(find_free_port)
+export NCCL_SOCKET_IFNAME=lo
+
 echo "=== maxP debug run ==="
 echo "  scale:      ${SCALE}"
 echo "  method:     ${METHOD}"
@@ -47,6 +56,7 @@ echo "  dataset:    ${DATASET}"
 echo "  steps:      ${STEPS}"
 echo "  gpus:       ${GPUS}"
 echo "  output_dir: ${OUTPUT_DIR}"
+echo "  master_port:${MASTER_PORT}"
 echo ""
 
 mkdir -p "${OUTPUT_DIR}"
@@ -66,9 +76,8 @@ TRAIN_ARGS=(
 
 if [[ "${GPUS}" -eq 1 ]]; then
     # Single GPU: run python directly so logs stream to terminal
-    LOCAL_RANK=0 RANK=0 WORLD_SIZE=1 MASTER_ADDR=localhost MASTER_PORT=0 \
-        python experiments/lm/train.py "${TRAIN_ARGS[@]}"
+    LOCAL_RANK=0 RANK=0 WORLD_SIZE=1 python experiments/lm/train.py "${TRAIN_ARGS[@]}"
 else
     # Multi-GPU: use torchrun
-    torchrun --nproc_per_node="${GPUS}" experiments/lm/train.py "${TRAIN_ARGS[@]}"
+    torchrun --nproc_per_node="${GPUS}" --master_addr="${MASTER_ADDR}" --master_port="${MASTER_PORT}" experiments/lm/train.py "${TRAIN_ARGS[@]}"
 fi
