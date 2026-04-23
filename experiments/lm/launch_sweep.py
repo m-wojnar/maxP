@@ -85,7 +85,7 @@ source "${venv_path}/bin/activate"
 cd "${repo_path}"
 
 export OMP_NUM_THREADS=8
-export HF_HOME="$${HF_HOME:-/net/storage/pr3/plgrid/plggadlers/hf_cache}"
+export HF_HOME="$${HF_HOME:-/net/scratch/hscra/plgrid/plgmwojnar/hf}"
 export WANDB_PROJECT="$${WANDB_PROJECT:-maxP-lm}"
 export WANDB_RUN_NAME="maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}"
 
@@ -107,6 +107,7 @@ torchrun --nproc_per_node=${gpus_per_node} --master_addr=$${MASTER_ADDR} --maste
     --seed ${seed} \\
     --batch-size ${batch_size} \\
     --dataset ${dataset} \\
+    ${dataset_path_arg} \\
     --hf-assets-path ${hf_assets_path} \\
     --output-dir ${output_dir}
 """)
@@ -141,6 +142,8 @@ def main() -> None:
     p.add_argument("--runs-dir", required=True, help="Root directory for run outputs")
     p.add_argument("--dataset", required=True,
                    help="HuggingFace dataset name (e.g. HuggingFaceFW/fineweb-edu)")
+    p.add_argument("--dataset-path", default=None,
+                   help="Optional local path to dataset assets (otherwise streamed from HF)")
     p.add_argument("--hf-assets-path", required=True,
                    help="Path to local HF tokenizer assets directory")
     p.add_argument("--venv-path", required=True, help="Path to Python venv")
@@ -175,6 +178,8 @@ def main() -> None:
 
                 out_dir.mkdir(parents=True, exist_ok=True)
 
+                dataset_path_arg = f"--dataset-path {args.dataset_path}" if args.dataset_path else ""
+
                 script_content = SLURM_TEMPLATE.substitute(
                     scale=scale,
                     method_tag=_method_tag(method),
@@ -189,6 +194,7 @@ def main() -> None:
                     batch_size=args.batch_size,
                     gpus_per_node=args.gpus_per_node,
                     dataset=args.dataset,
+                    dataset_path_arg=dataset_path_arg,
                     hf_assets_path=args.hf_assets_path,
                 )
                 script_path = out_dir / "job.sh"

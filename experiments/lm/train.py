@@ -159,8 +159,7 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
             last_save_model_only=False,
         ),
         compile=CompileConfig(enable=not is_debug),
-        activation_checkpoint=ActivationCheckpointConfig(mode="selective"),
-        debug=DebugConfig(seed=args.seed),
+        activation_checkpoint=ActivationCheckpointConfig(mode="full"),
         validator=Validator.Config(
             enable=not is_debug,
             freq=500,
@@ -171,7 +170,6 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
 
 def parse_args() -> argparse.Namespace:
     default_hf_path = os.path.join(os.path.dirname(__file__), "assets/hf/Llama-3.1-8B")
-    default_dataset_path = os.path.join(os.path.dirname(__file__), "assets/c4_test")
     p = argparse.ArgumentParser(
         description="MaxP LLaMA-3 pre-training",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -200,9 +198,9 @@ def parse_args() -> argparse.Namespace:
                    help="Random seed")
     p.add_argument("--output-dir", default="./outputs",
                    help="Directory to save checkpoints and logs")
-    p.add_argument("--dataset", default="c4_test",
+    p.add_argument("--dataset", default="fineweb-edu",
                    help="HuggingFace dataset name or local path")
-    p.add_argument("--dataset-path", default=default_dataset_path,
+    p.add_argument("--dataset-path", default=None,
                    help="Override dataset path (e.g. absolute path to c4_test on disk)")
     p.add_argument("--hf-assets-path", default=default_hf_path,
                    help="Path to HF tokenizer assets (local copy)")
