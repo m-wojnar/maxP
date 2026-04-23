@@ -129,9 +129,9 @@ class MaxPConverter(Configurable, ModelConverter):
             sample_size=cfg.sample_size,
             c_ema=cfg.c_ema,
         )
-        model._maxp_param_groups = param.param_groups
+        model._maxp_param = param
         if cfg.method == "maxP":
-            model._maxp_param = param
+            model._is_dynamic = True
             model._maxp_align = {
                 name: (pm.align_z0_dW, pm.align_dZ_w0, pm.align_dZ_dW)
                 for name, pm in param._pms
@@ -161,13 +161,11 @@ def _make_sample_input(model: nn.Module) -> torch.Tensor | None:
 
 
 def post_optimizer_build_fn(optimizers, model_parts: list[nn.Module], parallel_dims: ParallelDims) -> None:
-    """Called by Trainer after init_weights() and optimizer.build(). 
-    
-    Reads param_groups set by MaxPConverter.convert().
+    """Called by Trainer after init_weights() and optimizer.build().
+
+    Re-runs the tensor-bound bits of Parametrization (weight init + per-layer
+    param_groups) now that the model has been materialized off meta device,
+    and splices the resulting groups into the optimizer.
     """
     for optimizer, model in zip(optimizers, model_parts):
-        param_groups = getattr(model, "_maxp_param_groups", None)
-        if param_groups is None:
-            continue
-        non_lr_defaults = {k: v for k, v in optimizer.param_groups[0].items() if k != "lr" and k != "params"}
-        optimizer.param_groups[:] = [{**g, **non_lr_defaults} for g in param_groups]
+        model._maxp_param.refresh(optimizer=optimizer)

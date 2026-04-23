@@ -54,7 +54,9 @@ mkdir -p "${OUTPUT_DIR}"
 TRAIN_ARGS=(
     --scale "${SCALE}"
     --method "${METHOD}"
-    --lr 1e-3
+    --lr 0.03
+    --alignment-warmup 20
+    --solve-interval 5
     --steps "${STEPS}"
     --dataset "${DATASET}"
     ${C4_TEST:+--dataset-path "${C4_TEST}"}

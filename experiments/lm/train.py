@@ -49,7 +49,7 @@ class MaxPTrainer(Trainer):
         # Pre-fetch a batch to capture real tokens for alignment measurement
         # before the optimizer step modifies weights.
         needs_capture = [m for m in self.model_parts
-                         if getattr(m, "_maxp_param", None) is not None
+                         if getattr(m, "_is_dynamic", False)
                          and not getattr(m, "_maxp_ready", False)]
         if needs_capture:
             batch = next(data_iterator)
@@ -65,9 +65,9 @@ class MaxPTrainer(Trainer):
         # lr_prefactor is read from the "_other" group whose lr = lr_prefactor * wsd_factor,
         # so _sync_lrs computes per-layer lr = lr_prefactor * wsd_factor * n^(-c).
         for model, opt in zip(self.model_parts, self.optimizers.optimizers):
-            param = getattr(model, "_maxp_param", None)
-            if param is None or not getattr(model, "_maxp_ready", False):
+            if not getattr(model, "_is_dynamic", False) or not getattr(model, "_maxp_ready", False):
                 continue
+            param = model._maxp_param
             for g in opt.param_groups:
                 if g.get("layer_name") == "_other":
                     param.lr_prefactor = g["lr"]
