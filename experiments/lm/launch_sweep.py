@@ -33,11 +33,11 @@ from string import Template
 # ---------------------------------------------------------------------------
 
 SCALE_CONFIGS = {
-    "s1": {"wall": "02:00:00", "nodes": 1},
-    "s2": {"wall": "02:00:00", "nodes": 1},
-    "s3": {"wall": "06:00:00", "nodes": 1},
-    "s4": {"wall": "24:00:00", "nodes": 1},
-    "s5": {"wall": "48:00:00", "nodes": 1},
+    "s1": {"wall": "02:00:00", "nodes": 1, "gpus": 1},
+    "s2": {"wall": "04:00:00", "nodes": 1, "gpus": 1},
+    "s3": {"wall": "24:00:00", "nodes": 1, "gpus": 1},
+    "s4": {"wall": "48:00:00", "nodes": 1, "gpus": 4},
+    "s5": {"wall": "48:00:00", "nodes": 1, "gpus": 4},
 }
 
 # Supported methods (currently implemented)
@@ -137,8 +137,8 @@ def main() -> None:
                    help="Override seed list (default: per-scale defaults)")
     p.add_argument("--batch-size", type=int, default=8,
                    help="Local batch size per GPU")
-    p.add_argument("--gpus-per-node", type=int, default=1,
-                   help="GPUs per SLURM node (also sets --nproc_per_node)")
+    p.add_argument("--gpus-per-node", type=int, default=None,
+                   help="GPUs per SLURM node (default: per-scale value from SCALE_CONFIGS)")
     p.add_argument("--runs-dir", required=True, help="Root directory for run outputs")
     p.add_argument("--dataset", required=True,
                    help="HuggingFace dataset name (e.g. HuggingFaceFW/fineweb-edu)")
@@ -159,6 +159,7 @@ def main() -> None:
     methods = args.methods or SCALE_METHODS[scale]
     lrs = args.lrs or (S5_SINGLE_LR if scale == "s5" else ALL_LRS)
     seeds = args.seeds or SCALE_SEEDS[scale]
+    gpus_per_node = args.gpus_per_node if args.gpus_per_node is not None else sc["gpus"]
 
     today = date.today().strftime("%Y-%m-%d")
     submitted = skipped = 0
@@ -192,7 +193,7 @@ def main() -> None:
                     method=method,
                     lr=lr,
                     batch_size=args.batch_size,
-                    gpus_per_node=args.gpus_per_node,
+                    gpus_per_node=gpus_per_node,
                     dataset=args.dataset,
                     dataset_path_arg=dataset_path_arg,
                     hf_assets_path=args.hf_assets_path,
