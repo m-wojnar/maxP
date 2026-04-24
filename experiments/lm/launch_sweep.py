@@ -92,7 +92,7 @@ module add ML-bundle/25.10
 source "${venv_path}/bin/activate"
 cd "${repo_path}"
 
-export OMP_NUM_THREADS=8
+export OMP_NUM_THREADS=16
 export HF_HOME="$${HF_HOME:-/net/scratch/hscra/plgrid/plgmwojnar/hf}"
 export WANDB_PROJECT="$${WANDB_PROJECT:-maxP-lm}"
 export WANDB_RUN_NAME="maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}"
@@ -116,6 +116,8 @@ torchrun --nproc_per_node=${gpus_per_node} --master_addr=$${MASTER_ADDR} --maste
     --batch-size ${batch_size} \\
     --dataset ${dataset} \\
     ${dataset_path_arg} \\
+    --num-workers ${num_workers} \\
+    --prefetch-factor ${prefetch_factor} \\
     --hf-assets-path ${hf_assets_path} \\
     --output-dir ${output_dir}
 """)
@@ -152,6 +154,10 @@ def main() -> None:
                    help="HuggingFace dataset name (default: per-scale defaults)")
     p.add_argument("--dataset-path", default=None,
                    help="Optional local path to dataset assets (otherwise streamed from HF)")
+    p.add_argument("--num-workers", type=int, default=8,
+                   help="DataLoader num_workers for prefetching")
+    p.add_argument("--prefetch-factor", type=int, default=4,
+                   help="Batches prefetched per DataLoader worker")
     p.add_argument("--hf-assets-path", required=True,
                    help="Path to local HF tokenizer assets directory")
     p.add_argument("--venv-path", required=True, help="Path to Python venv")
@@ -205,6 +211,8 @@ def main() -> None:
                     gpus_per_node=gpus_per_node,
                     dataset=dataset,
                     dataset_path_arg=dataset_path_arg,
+                    num_workers=args.num_workers,
+                    prefetch_factor=args.prefetch_factor,
                     hf_assets_path=args.hf_assets_path,
                 )
                 script_path = out_dir / "job.sh"

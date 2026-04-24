@@ -149,6 +149,8 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
         dataloader=HuggingFaceTextDataLoader.Config(
             dataset=args.dataset,
             dataset_path=args.dataset_path,
+            num_workers=args.num_workers,
+            prefetch_factor=args.prefetch_factor,
         ),
         metrics=MetricsProcessor.Config(
             log_freq=10 if is_debug else 50,
@@ -206,6 +208,10 @@ def parse_args() -> argparse.Namespace:
                    help="HuggingFace dataset name or local path")
     p.add_argument("--dataset-path", default=None,
                    help="Override dataset path (e.g. absolute path to c4_test on disk)")
+    p.add_argument("--num-workers", type=int, default=1,
+                   help="DataLoader num_workers for prefetching")
+    p.add_argument("--prefetch-factor", type=int, default=1,
+                   help="Batches prefetched per DataLoader worker")
     p.add_argument("--hf-assets-path", default=default_hf_path,
                    help="Path to HF tokenizer assets (local copy)")
     return p.parse_args()
