@@ -27,7 +27,6 @@ case "$SCALE" in
 esac
 
 RUNS_DIR="${RUNS_DIR:-/net/storage/pr3/plgrid/plggadlers/maxP/runs}"
-DATASET="${DATASET:-fineweb-edu}"
 HF_ASSETS_PATH="${HF_ASSETS_PATH:-/net/storage/pr3/plgrid/plggadlers/maxP/experiments/lm/assets/hf/Llama-3.1-8B}"
 VENV_PATH="${VENV_PATH:-/net/storage/pr3/plgrid/plggadlers/maxP/.venv}"
 REPO_PATH="${REPO_PATH:-/net/storage/pr3/plgrid/plggadlers/maxP}"
@@ -40,7 +39,6 @@ python experiments/lm/launch_sweep.py \
     --lrs $LRS \
     --seeds $SEEDS \
     --runs-dir "$RUNS_DIR" \
-    --dataset "$DATASET" \
     --hf-assets-path "$HF_ASSETS_PATH" \
     --venv-path "$VENV_PATH" \
     --repo-path "$REPO_PATH" \

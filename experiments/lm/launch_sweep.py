@@ -40,7 +40,6 @@ SCALE_CONFIGS = {
     "s5": {"wall": "48:00:00", "nodes": 1, "gpus": 4},
 }
 
-# Supported methods (currently implemented)
 SCALE_METHODS = {
     "s1": ["maxP", "mup-full", "mup-no"],
     "s2": ["maxP", "mup-full", "mup-no"],
@@ -56,6 +55,15 @@ SCALE_SEEDS = {
     "s4": [1],
     "s5": [1],
 }
+
+SCALE_DATASETS = {
+    "s1": "fineweb-edu-10bt",
+    "s2": "fineweb-edu-10bt",
+    "s3": "fineweb-edu-10bt",
+    "s4": "fineweb-edu-100bt",
+    "s5": "fineweb-edu-100bt",
+}
+
 
 # Full LR grid from experiments.md §4.1
 ALL_LRS = [3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 1e-1, 3e-1]
@@ -140,8 +148,8 @@ def main() -> None:
     p.add_argument("--gpus-per-node", type=int, default=None,
                    help="GPUs per SLURM node (default: per-scale value from SCALE_CONFIGS)")
     p.add_argument("--runs-dir", required=True, help="Root directory for run outputs")
-    p.add_argument("--dataset", required=True,
-                   help="HuggingFace dataset name (e.g. HuggingFaceFW/fineweb-edu)")
+    p.add_argument("--dataset", default=None,
+                   help="HuggingFace dataset name (default: per-scale defaults)")
     p.add_argument("--dataset-path", default=None,
                    help="Optional local path to dataset assets (otherwise streamed from HF)")
     p.add_argument("--hf-assets-path", required=True,
@@ -159,6 +167,7 @@ def main() -> None:
     methods = args.methods or SCALE_METHODS[scale]
     lrs = args.lrs or (S5_SINGLE_LR if scale == "s5" else ALL_LRS)
     seeds = args.seeds or SCALE_SEEDS[scale]
+    dataset = args.dataset or SCALE_DATASETS[scale]
     gpus_per_node = args.gpus_per_node if args.gpus_per_node is not None else sc["gpus"]
 
     today = date.today().strftime("%Y-%m-%d")
@@ -194,7 +203,7 @@ def main() -> None:
                     lr=lr,
                     batch_size=args.batch_size,
                     gpus_per_node=gpus_per_node,
-                    dataset=args.dataset,
+                    dataset=dataset,
                     dataset_path_arg=dataset_path_arg,
                     hf_assets_path=args.hf_assets_path,
                 )

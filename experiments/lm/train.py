@@ -202,7 +202,7 @@ def parse_args() -> argparse.Namespace:
                    help="Random seed")
     p.add_argument("--output-dir", default="./outputs",
                    help="Directory to save checkpoints and logs")
-    p.add_argument("--dataset", default="fineweb-edu",
+    p.add_argument("--dataset", default="fineweb-edu-10bt",
                    help="HuggingFace dataset name or local path")
     p.add_argument("--dataset-path", default=None,
                    help="Override dataset path (e.g. absolute path to c4_test on disk)")
