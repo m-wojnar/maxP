@@ -159,7 +159,7 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
             enable=True,
             interval=5000,
             last_save_model_only=False,
-            keep_latest_k=1,
+            keep_latest_k=2,
             async_mode="async",
         ),
         compile=CompileConfig(enable=not is_debug),
