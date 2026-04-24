@@ -13,10 +13,8 @@ Usage:
         --hf-assets-path /net/storage/pr3/plgrid/plggadlers/maxP/experiments/lm/assets/hf/Llama-3.1-8B \\
         --venv-path /net/storage/pr3/plgrid/plggadlers/maxP/.venv \\
         --repo-path /net/storage/pr3/plgrid/plggadlers/maxP \\
-        [--dry-run] [--resume]
+        [--dry-run]
 
-By default skips runs where any checkpoint already exists (started or completed).
-With --resume, submits all runs regardless (to resume interrupted training).
 """
 
 from __future__ import annotations
@@ -36,7 +34,7 @@ SCALE_CONFIGS = {
     "s1": {"wall": "02:00:00", "nodes": 1, "gpus": 1},
     "s2": {"wall": "04:00:00", "nodes": 1, "gpus": 1},
     "s3": {"wall": "24:00:00", "nodes": 1, "gpus": 2},
-    "s4": {"wall": "48:00:00", "nodes": 1, "gpus": 2},
+    "s4": {"wall": "48:00:00", "nodes": 1, "gpus": 4},
     "s5": {"wall": "48:00:00", "nodes": 1, "gpus": 4},
 }
 
@@ -56,10 +54,9 @@ SCALE_SEEDS = {
     "s5": [1],
 }
 
-# Full LR grid from experiments.md §4.1
 ALL_LRS = [3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 1e-1, 3e-1]
 
-S5_SINGLE_LR = [1e-2]  # transfer test: single best LR from S4
+S5_SINGLE_LR = [1e-2]
 
 
 # ---------------------------------------------------------------------------
@@ -122,11 +119,6 @@ def _method_tag(method: str) -> str:
     return method.replace("-", "")
 
 
-def _has_checkpoint(out_dir: Path) -> bool:
-    ckpt_dir = out_dir / "checkpoint"
-    return ckpt_dir.is_dir() and any(ckpt_dir.iterdir())
-
-
 def main() -> None:
     p = argparse.ArgumentParser(description="Launch maxP LLaMA-3 SLURM sweep")
     p.add_argument("--scale", required=True, choices=list(SCALE_CONFIGS))
@@ -155,8 +147,6 @@ def main() -> None:
     p.add_argument("--repo-path", required=True, help="Path to maxP repo root")
     p.add_argument("--dry-run", action="store_true",
                    help="Print sbatch commands without submitting")
-    p.add_argument("--resume", action="store_true",
-                   help="Submit all runs even if a checkpoint exists (resume interrupted training)")
     args = p.parse_args()
 
     scale = args.scale
@@ -167,7 +157,7 @@ def main() -> None:
     gpus_per_node = args.gpus_per_node if args.gpus_per_node is not None else sc["gpus"]
 
     today = date.today().strftime("%Y-%m-%d")
-    submitted = skipped = 0
+    submitted = 0
 
     for method in methods:
         for lr in lrs:
@@ -176,11 +166,6 @@ def main() -> None:
                     f"{today}_{scale}_{_method_tag(method)}_lr{_lr_tag(lr)}_s{seed}"
                 )
                 out_dir = Path(args.runs_dir) / run_name
-
-                if not args.resume and _has_checkpoint(out_dir):
-                    print(f"[skip]   {run_name}")
-                    skipped += 1
-                    continue
 
                 out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -220,7 +205,7 @@ def main() -> None:
                 submitted += 1
 
     action = "would submit" if args.dry_run else "submitted"
-    print(f"\nDone: {action} {submitted} jobs, skipped {skipped} completed runs.")
+    print(f"\nDone: {action} {submitted} jobs.")
 
 
 if __name__ == "__main__":

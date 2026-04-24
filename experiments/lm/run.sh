@@ -4,7 +4,6 @@
 # Usage:
 #   bash experiments/lm/run.sh s3 [launch_sweep.py flags …]
 #
-# Per-scale defaults (seeds, LRs, methods) match experiments.md §4.1.
 # Override any of them by passing extra flags after the scale argument.
 #
 # Examples:

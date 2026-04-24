@@ -22,17 +22,11 @@ import os
 import torch
 torch._dynamo.config.recompile_limit = 100
 
-from torchtitan.components.checkpoint import CheckpointManager
 from torchtitan.components.lr_scheduler import LRSchedulersContainer
 from torchtitan.components.metrics import MetricsProcessor
 from torchtitan.components.optimizer import OptimizersContainer
 from torchtitan.components.validate import Validator
-from torchtitan.config.configs import (
-    ActivationCheckpointConfig,
-    CompileConfig,
-    DebugConfig,
-    TrainingConfig,
-)
+from torchtitan.config.configs import ActivationCheckpointConfig, CompileConfig, TrainingConfig
 from torchtitan.hf_datasets.text_datasets import HuggingFaceTextDataLoader
 from torchtitan.protocols.model_converter import ModelConvertersContainer
 from torchtitan.tools.logging import init_logger, logger
@@ -165,13 +159,6 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
             log_freq=10 if is_debug else 50,
             enable_tensorboard=not is_debug,
             enable_wandb=not is_debug,
-        ),
-        checkpoint=CheckpointManager.Config(
-            enable=True,
-            interval=5000,
-            last_save_model_only=False,
-            keep_latest_k=2,
-            async_mode="async",
         ),
         compile=CompileConfig(enable=not is_debug),
         activation_checkpoint=ActivationCheckpointConfig(mode="full"),
