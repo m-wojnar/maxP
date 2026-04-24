@@ -35,8 +35,8 @@ from string import Template
 SCALE_CONFIGS = {
     "s1": {"wall": "02:00:00", "nodes": 1, "gpus": 1},
     "s2": {"wall": "04:00:00", "nodes": 1, "gpus": 1},
-    "s3": {"wall": "24:00:00", "nodes": 1, "gpus": 1},
-    "s4": {"wall": "48:00:00", "nodes": 1, "gpus": 4},
+    "s3": {"wall": "24:00:00", "nodes": 1, "gpus": 2},
+    "s4": {"wall": "48:00:00", "nodes": 1, "gpus": 2},
     "s5": {"wall": "48:00:00", "nodes": 1, "gpus": 4},
 }
 
@@ -55,15 +55,6 @@ SCALE_SEEDS = {
     "s4": [1],
     "s5": [1],
 }
-
-SCALE_DATASETS = {
-    "s1": "fineweb-edu-10bt",
-    "s2": "fineweb-edu-10bt",
-    "s3": "fineweb-edu-10bt",
-    "s4": "fineweb-edu-100bt",
-    "s5": "fineweb-edu-100bt",
-}
-
 
 # Full LR grid from experiments.md §4.1
 ALL_LRS = [3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 1e-1, 3e-1]
@@ -145,12 +136,12 @@ def main() -> None:
                    help="Override LR list (default: all 7 values)")
     p.add_argument("--seeds", type=int, nargs="+", default=None,
                    help="Override seed list (default: per-scale defaults)")
-    p.add_argument("--batch-size", type=int, default=8,
-                   help="Local batch size per GPU")
+    p.add_argument("--batch-size", type=int, default=16,
+                   help="Global batch size (divided by WORLD_SIZE to get per-GPU)")
     p.add_argument("--gpus-per-node", type=int, default=None,
                    help="GPUs per SLURM node (default: per-scale value from SCALE_CONFIGS)")
     p.add_argument("--runs-dir", required=True, help="Root directory for run outputs")
-    p.add_argument("--dataset", default=None,
+    p.add_argument("--dataset", default="fineweb-edu",
                    help="HuggingFace dataset name (default: per-scale defaults)")
     p.add_argument("--dataset-path", default=None,
                    help="Optional local path to dataset assets (otherwise streamed from HF)")
@@ -173,7 +164,6 @@ def main() -> None:
     methods = args.methods or SCALE_METHODS[scale]
     lrs = args.lrs or (S5_SINGLE_LR if scale == "s5" else ALL_LRS)
     seeds = args.seeds or SCALE_SEEDS[scale]
-    dataset = args.dataset or SCALE_DATASETS[scale]
     gpus_per_node = args.gpus_per_node if args.gpus_per_node is not None else sc["gpus"]
 
     today = date.today().strftime("%Y-%m-%d")
@@ -209,7 +199,7 @@ def main() -> None:
                     lr=lr,
                     batch_size=args.batch_size,
                     gpus_per_node=gpus_per_node,
-                    dataset=dataset,
+                    dataset=args.dataset,
                     dataset_path_arg=dataset_path_arg,
                     num_workers=args.num_workers,
                     prefetch_factor=args.prefetch_factor,

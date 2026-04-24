@@ -98,18 +98,27 @@ class MaxPTrainer(Trainer):
             self.metrics_processor.logger.log(extra, self.step)
 
 
+def _local_batch_size(global_batch_size: int) -> int:
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    assert global_batch_size % world_size == 0, (
+        f"--batch-size {global_batch_size} not divisible by WORLD_SIZE {world_size}"
+    )
+    return global_batch_size // world_size
+
+
 def _resolve_steps(args: argparse.Namespace) -> int:
     if args.steps is not None:
         return args.steps
     if args.scale == "debug":
         return 20
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    return compute_steps(args.scale, args.seq_len, args.batch_size, world_size)
+    return compute_steps(args.scale, args.seq_len, _local_batch_size(args.batch_size), world_size)
 
 
 def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
     is_debug = args.scale == "debug"
     steps = _resolve_steps(args)
+    local_batch_size = _local_batch_size(args.batch_size)
 
     model_spec = maxp_model_registry(
         scale=args.scale,
@@ -141,7 +150,7 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
             decay_ratio=0.1,
         ),
         training=TrainingConfig(
-            local_batch_size=2 if is_debug else args.batch_size,
+            local_batch_size=local_batch_size,
             seq_len=args.seq_len,
             steps=steps,
             dtype="bfloat16",
@@ -194,12 +203,12 @@ def parse_args() -> argparse.Namespace:
                    help="Sequences for alignment measurement (maxP only)")
     p.add_argument("--c-ema", type=float, default=0.0,
                    help="EMA smoothing for c values (maxP only)")
-    p.add_argument("--seq-len", type=int, default=2048,
+    p.add_argument("--seq-len", type=int, default=3072,
                    help="Sequence length")
     p.add_argument("--steps", type=int, default=None,
                    help="Training steps (default: auto-computed as 20 × non-embed params / tokens-per-step)")
-    p.add_argument("--batch-size", type=int, default=8, 
-                   help="Local batch size per GPU")
+    p.add_argument("--batch-size", type=int, default=16,
+                   help="Global batch size (divided by WORLD_SIZE to get per-GPU)")
     p.add_argument("--seed", type=int, default=1,
                    help="Random seed")
     p.add_argument("--output-dir", default="./outputs",
@@ -208,9 +217,9 @@ def parse_args() -> argparse.Namespace:
                    help="HuggingFace dataset name or local path")
     p.add_argument("--dataset-path", default=None,
                    help="Override dataset path (e.g. absolute path to c4_test on disk)")
-    p.add_argument("--num-workers", type=int, default=1,
+    p.add_argument("--num-workers", type=int, default=8,
                    help="DataLoader num_workers for prefetching")
-    p.add_argument("--prefetch-factor", type=int, default=1,
+    p.add_argument("--prefetch-factor", type=int, default=4,
                    help="Batches prefetched per DataLoader worker")
     p.add_argument("--hf-assets-path", default=default_hf_path,
                    help="Path to HF tokenizer assets (local copy)")
