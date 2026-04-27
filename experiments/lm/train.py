@@ -22,6 +22,7 @@ import os
 import torch
 torch._dynamo.config.recompile_limit = 100
 
+from torchtitan.components.checkpoint import CheckpointManager
 from torchtitan.components.lr_scheduler import LRSchedulersContainer
 from torchtitan.components.metrics import MetricsProcessor
 from torchtitan.components.optimizer import OptimizersContainer
@@ -46,12 +47,14 @@ class MaxPTrainer(Trainer):
         needs_capture = [m for m in self.model_parts
                          if getattr(m, "_is_dynamic", False)
                          and not getattr(m, "_maxp_ready", False)]
+
         if needs_capture:
             batch = next(data_iterator)
             tokens = batch[0]["input"].detach()
+            model_to_opt = dict(zip(self.model_parts, self.optimizers.optimizers))
             for model in needs_capture:
                 model._maxp_sample_x = tokens
-                model._maxp_param.capture_initial(tokens)
+                model._maxp_param.capture_initial(tokens, optimizer=model_to_opt[model])
                 model._maxp_ready = True
 
         super().train_step(data_iterator)
@@ -160,6 +163,13 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
             enable_tensorboard=not is_debug,
             enable_wandb=not is_debug,
         ),
+        checkpoint=CheckpointManager.Config(
+            enable=args.checkpoint_interval is not None,
+            interval=args.checkpoint_interval,
+            last_save_model_only=False,
+            keep_latest_k=2,
+            async_mode="async",
+        ),
         compile=CompileConfig(enable=not is_debug),
         activation_checkpoint=ActivationCheckpointConfig(mode="full"),
         validator=Validator.Config(
@@ -178,9 +188,9 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--scale", choices=list(SCALE_CONFIGS), default="s3",
                    help="Model scale")
-    p.add_argument("--method", choices=["maxP", "mup-full", "mup-no"], default="maxP", 
+    p.add_argument("--method", choices=["maxP", "mup-full", "mup-no"], default="maxP",
                    help="maxP variant")
-    p.add_argument("--lr", type=float, default=1e-3, 
+    p.add_argument("--lr", type=float, default=1e-3,
                    help="LR prefactor")
     p.add_argument("--alignment-warmup", type=int, default=100,
                    help="Steps before first LP re-solve (maxP only)")
@@ -210,6 +220,8 @@ def parse_args() -> argparse.Namespace:
                    help="Batches prefetched per DataLoader worker")
     p.add_argument("--hf-assets-path", default=default_hf_path,
                    help="Path to HF tokenizer assets (local copy)")
+    p.add_argument("--checkpoint-interval", type=int, default=None,
+                   help="Save checkpoint every N steps")
     return p.parse_args()
 
 

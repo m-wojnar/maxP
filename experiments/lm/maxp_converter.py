@@ -106,6 +106,7 @@ class MaxPConverter(Configurable, ModelConverter):
         solve_interval: int = 100     # maxP only
         sample_size: int = 32         # maxP only
         c_ema: float = 0.0            # maxP only
+        use_training_activations: bool = False  # maxP only
 
     def __init__(
         self,
@@ -128,6 +129,7 @@ class MaxPConverter(Configurable, ModelConverter):
             solve_interval=cfg.solve_interval,
             sample_size=cfg.sample_size,
             c_ema=cfg.c_ema,
+            use_training_activations=cfg.use_training_activations,
         )
         model._maxp_param = param
         if cfg.method == "maxP":

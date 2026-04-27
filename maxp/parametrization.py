@@ -371,6 +371,51 @@ class Parametrization:
 
         return captured
 
+    def _capture_and_resync(
+        self,
+        sample_input: torch.Tensor,
+        optimizer: torch.optim.Optimizer | None,
+    ) -> dict[str, torch.Tensor]:
+        """Capture activations, then resync optimizer param refs by FQN.
+
+        A ``torch.no_grad()`` forward can trigger FSDP2 to reshard a unit
+        and replace ``nn.Parameter`` Python objects.  The optimizer then
+        holds stale refs that don't match ``model.named_parameters()`` by
+        identity — which breaks ``get_optimizer_state_dict`` at checkpoint
+        time (``KeyError`` on integer param index).
+
+        We snapshot ``{id(p): fqn}`` before the forward; after, any group
+        param whose old id maps to a known fqn but whose current tensor at
+        that fqn is a different Python object is rebound, and its entry
+        in ``optimizer.state`` migrated to the new key.
+        """
+        if optimizer is None:
+            return self._capture_activations(sample_input)
+
+        old_id_to_name = {id(p): name for name, p in self.model.named_parameters()}
+        captured = self._capture_activations(sample_input)
+        current_by_name = {name: p for name, p in self.model.named_parameters()}
+
+        swaps: list[tuple[torch.nn.Parameter, torch.nn.Parameter]] = []
+        for group in optimizer.param_groups:
+            new_params = []
+            for p in group["params"]:
+                name = old_id_to_name.get(id(p))
+                if name is None:
+                    new_params.append(p)
+                    continue
+                new_p = current_by_name.get(name, p)
+                if new_p is not p:
+                    swaps.append((p, new_p))
+                new_params.append(new_p)
+            group["params"] = new_params
+
+        for old_p, new_p in swaps:
+            if old_p in optimizer.state:
+                optimizer.state[new_p] = optimizer.state.pop(old_p)
+
+        return captured
+
     def register_hooks(self) -> None:
         """Install persistent forward hooks to capture activations during training.
 
@@ -408,7 +453,11 @@ class Parametrization:
         self._persistent_hooks.clear()
         self._latest_activations.clear()
 
-    def capture_initial(self, sample_input: torch.Tensor) -> None:
+    def capture_initial(
+        self,
+        sample_input: torch.Tensor,
+        optimizer: torch.optim.Optimizer | None = None,
+    ) -> None:
         """Capture initial (z_0, w_0) for alignment measurement.
 
         Must be called before training starts (after ``__init__``).
@@ -420,8 +469,10 @@ class Parametrization:
         Args:
             sample_input: A batch of inputs to run through the model.
                 Only the first ``sample_size`` samples are kept.
+            optimizer: If provided, optimizer param_groups + state are
+                resynced after the no_grad forward (FSDP2-safe).
         """
-        captured = self._capture_activations(sample_input)
+        captured = self._capture_and_resync(sample_input, optimizer)
 
         for name, pm in self._pms:
             if pm.inner is not None and pm.weight is not None and name in captured:
@@ -515,7 +566,7 @@ class Parametrization:
                 raise ValueError(
                     "sample_input is required when use_training_activations=False."
                 )
-            current = self._capture_activations(sample_input)
+            current = self._capture_and_resync(sample_input, optimizer)
 
         # 2. Compute alignment per PM, write back to PM
         from maxp.alignment import compute_alignment
