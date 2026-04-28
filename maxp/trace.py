@@ -10,6 +10,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributed.tensor import DTensor
 
 
 @dataclass
@@ -34,10 +35,30 @@ class _TracingTensor(torch.Tensor):
     def __torch_function__(cls, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
 
-        # Call the real function with unwrapped tensors
-        raw_args = tuple(a._real if isinstance(a, _TracingTensor) else a for a in args)
-        raw_kwargs = {k: v._real if isinstance(v, _TracingTensor) else v for k, v in kwargs.items()}
+        def _unwrap(x):
+            if isinstance(x, _TracingTensor):
+                return x._real
+            if isinstance(x, list):
+                return [_unwrap(item) for item in x]
+            if isinstance(x, tuple):
+                return type(x)(_unwrap(item) for item in x)
+            return x
+
+        raw_args = tuple(_unwrap(a) for a in args)
+        raw_kwargs = {k: _unwrap(v) for k, v in kwargs.items()}
         out = func(*raw_args, **raw_kwargs)
+
+        # detach() must always return the same subclass so nn.Parameter(traced_tensor)
+        # works correctly (PyTorch asserts type(data.detach()) == type(data)).
+        if func.__name__ == "detach" and args and isinstance(args[0], _TracingTensor):
+            return _TracingTensor._wrap(out)
+
+        # Outside of an active tracing context, pass the result through without
+        # wrapping — this prevents _TracingDTensor params persisted by FSDP2 from
+        # wrapping every training op output and causing recursive __torch_function__
+        # calls during clip_grad_norm_ and similar utilities.
+        if cls._tracer is None and cls._dag_builder is None:
+            return out
 
         # Record if this is a matmul-like op
         tracer = cls._tracer
@@ -58,7 +79,10 @@ class _TracingTensor(torch.Tensor):
 
     @classmethod
     def _wrap(cls, t: torch.Tensor) -> "_TracingTensor":
-        r = t.as_subclass(cls)
+        if isinstance(t, DTensor):
+            r = DTensor.__new__(_TracingDTensor, t._local_tensor, t._spec, requires_grad=t.requires_grad)
+        else:
+            r = t.as_subclass(cls)
         r._real = t
         r._pm_tags = frozenset()
         return r
@@ -74,6 +98,14 @@ class _TracingTensor(torch.Tensor):
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
+
+
+class _TracingDTensor(_TracingTensor, DTensor):
+    """_TracingTensor variant for DTensor parameters (e.g. FSDP2-sharded weights).
+    Preserves the DTensor structure so FSDP2's isinstance(x, DTensor) checks and
+    _local_tensor access continue to work during lazy init.
+    """
+    pass
 
 
 # Ops that indicate elementwise multiply (merge_type = SUM in exponent space)
@@ -167,7 +199,7 @@ class _MatmulTracer:
             if isinstance(mod, nn.Embedding):
                 original = mod.weight
                 wrapped = _TracingTensor._wrap(original.data)
-                mod.weight = nn.Parameter(wrapped, requires_grad=original.requires_grad)
+                mod._parameters['weight'] = wrapped
                 self._wrapped_embeddings.append((mod, original))
 
         # Register hooks to track module context
@@ -187,7 +219,7 @@ class _MatmulTracer:
         self._hooks.clear()
         # Restore original embedding weights
         for mod, original in self._wrapped_embeddings:
-            mod.weight = original
+            mod._parameters['weight'] = original
         self._wrapped_embeddings.clear()
 
     def _pre_hook(self, module, input):

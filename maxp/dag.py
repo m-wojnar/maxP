@@ -202,7 +202,9 @@ class _DagBuilder:
         nodes: dict[str, DagNode] = {}
         for name, pm in pms:
             lt = pm.layer_type
-            a, b = ab.get(lt, (0.0, 0.5))
+            a_default, b_default = ab.get(lt, (0.0, 0.5))
+            a = pm.a if pm.a is not None else a_default
+            b = pm.b if pm.b is not None else b_default
             nodes[name] = DagNode(
                 name=name,
                 a=a,

@@ -14,7 +14,14 @@ The library solves a Linear Program (LP) to find optimal `c_l` values that maxim
 ```bash
 git clone https://github.com/m-wojnar/maxP.git
 cd maxP
+
+# Core library only (CPU)
 pip install -e .
+
+# With dev dependencies (includes torchtitan for LLM experiments)
+uv pip install -e ".[dev,cu128]"   # CUDA 12.8
+uv pip install -e ".[dev,cu130]"   # CUDA 13.0
+uv pip install -e ".[dev]"         # CPU / system torch
 ```
 
 ## Quick Start
@@ -70,6 +77,15 @@ maxp/
 ├── dag.py             # DAG builder — traces PM-to-PM data flow
 ├── trace.py           # Operation tracer — records matmul-like ops
 └── diagnose.py        # Coord-check diagnostics — sweep widths, plot scaling
+
+experiments/lm/        # LLaMA-3 pre-training experiments (torchtitan)
+├── train.py           # Main training entry point (MaxPTrainer)
+├── maxp_llama3.py     # LLaMA-3 scale configs (debug, s1–s5) + compute_steps
+├── maxp_converter.py  # Post-optimizer-build hook; wires up Parametrization
+├── launch_sweep.py    # Generate and submit SLURM jobs for full LR sweep
+├── run.sh             # Submit a sweep for one scale
+├── run_debug.sh       # Quick single-GPU debug run
+└── coord_check.py     # Coord check for the parametrized LLaMA-3 model
 ```
 
 **Phase 1** (static, at init): discover PMs → reinit weights → solve LP → build param groups.
@@ -262,14 +278,31 @@ plot_axis(all_ops, affected, act_stats, widths, path="coord_check.png")
 
 If an activation grows with width, `a` is too small for that layer — increase it. If it shrinks, `a` is too large. Adjust per-layer with the `a` override on `ParametrizedModule` and re-run until all slopes are near zero.
 
-## Examples
+## LLM Experiments
 
-The `examples/` directory contains training scripts. To run the nanoGPT example:
+The `experiments/lm/` directory contains a full LLaMA-3 pre-training pipeline built on [torchtitan](https://github.com/pytorch/torchtitan). It trains five scales (30M–3B parameters) with three methods:
+
+| Method | Parametrization | Alignment | Schedule |
+|---|---|---|---|
+| `maxP` | µP + measured | online (dynamic re-solve) | emergent |
+| `mup-full` | µP | full (worst-case preset) | constant |
+| `mup-no` | µP | none (permissive preset) | constant |
+
+Training steps are computed automatically as `20 × non-embed params / tokens-per-step`.
+
+### Debug run (single GPU)
 
 ```bash
-source .venv/bin/activate
-cd examples/nanogpt_example
-python train.py
+bash experiments/lm/run_debug.sh \
+    --tokenizer /path/to/tokenizer \
+    --c4-test /path/to/c4_test \
+    --steps 200 --method maxP
+```
+
+### SLURM sweep
+
+```bash
+bash experiments/lm/run.sh s3   # submits 7 LRs × 3 methods × 2 seeds = 42 jobs
 ```
 
 ## Running Tests

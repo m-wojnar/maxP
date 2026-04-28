@@ -147,10 +147,12 @@ class Parametrization:
     ):
         self.model = model
         self.lr_prefactor = lr_prefactor
+        self._std_prefactor = std_prefactor
 
         ab = dict(_DEFAULT_AB)
         if ab_overrides:
             ab.update(ab_overrides)
+        self._ab = ab
 
         # Discover all ParametrizedModule instances
         pms: list[tuple[str, ParametrizedModule]] = [
@@ -206,70 +208,6 @@ class Parametrization:
         c_by_name = _solve_graph(graph, optimizer_type, c_fixed=c_fixed or None,
                                   solver=solver)
 
-        # Apply: init weights, set scale, build param groups
-        parametrized_ids: set[int] = set()
-        groups: list[dict] = []
-
-        for name, pm in pms:
-            lt = pm.layer_type
-            a_default, b_default = ab[lt]
-            a = pm.a if pm.a is not None else a_default
-            b = pm.b if pm.b is not None else b_default
-            fan_in = pm.width_dim
-            has_params = pm.weight is not None
-
-            # Set output scale
-            pm.scale = fan_in ** (-a) if a != 0.0 else 1.0
-
-            if has_params:
-                c = c_by_name[name]
-
-                # Re-initialise weights
-                inner = pm.inner
-                assert inner is not None
-                init_std = std_prefactor * (fan_in ** (-b))
-                with torch.no_grad():
-                    if resample_w0:
-                        seed = torch.randint(0, 2**31, (1,)).item()
-                        pm._w0_seed = seed
-                        pm._w0_std = init_std
-                        gen = torch.Generator(device=pm.weight.device)
-                        gen.manual_seed(seed)
-                        pm.weight.normal_(mean=0.0, std=init_std, generator=gen)
-                    else:
-                        pm.weight.normal_(mean=0.0, std=init_std)
-                    for pname, param in inner.named_parameters():
-                        if "bias" in pname:
-                            param.zero_()
-
-                # Build param group
-                params = list(inner.parameters())
-                for p in params:
-                    parametrized_ids.add(id(p))
-                groups.append({
-                    "params": params,
-                    "lr": lr_prefactor * (fan_in ** (-c)),
-                    "layer_name": name,
-                    "fan_in": fan_in,
-                    "c": float(c),
-                    "maxp_managed": True,
-                })
-
-        # Collect all other parameters (LayerNorm, etc.)
-        other = [
-            p for p in model.parameters()
-            if p.requires_grad and id(p) not in parametrized_ids
-        ]
-        if other:
-            groups.append({
-                "params": other,
-                "lr": lr_prefactor,
-                "layer_name": "_other",
-                "maxp_managed": False,
-            })
-
-        self._param_groups = groups
-
         # Phase 2 state
         self._pms = pms
         self._c_fixed = c_fixed or None
@@ -288,12 +226,7 @@ class Parametrization:
         self._graph = graph
         self._c_prev: dict[str, float] = dict(c_by_name)
         self._solver = solver  # user-provided solver (reused for warm start)
-
-        # c_target tracks the latest solver output; c blends toward it each step
-        self._c_target: dict[str, float] = {
-            group["layer_name"]: group["c"]
-            for group in groups if group.get("maxp_managed", False)
-        }
+        self.refresh()  # init weights, build param groups
 
         # Set initial alignment on each PM from the preset, with overrides
         a0_dW_val, dZ_w0_val, dZ_dW_val = _ALIGNMENT_PRESETS[alignment]
@@ -321,6 +254,95 @@ class Parametrization:
     @property
     def param_groups(self) -> list[dict]:
         return self._param_groups
+
+    def refresh(self, optimizer: torch.optim.Optimizer | None = None) -> None:
+        """Re-run weight init and rebuild ``param_groups`` against live params.
+
+        Use this when ``Parametrization`` was built on a meta-device model
+        (so ``__init__`` couldn't populate real weights or capture live
+        param tensor refs).
+        """
+        ab = self._ab
+        std_prefactor = self._std_prefactor
+
+        # Apply: init weights, set scale, build param groups
+        parametrized_ids: set[int] = set()
+        groups: list[dict] = []
+
+        for name, pm in self._pms:
+            lt = pm.layer_type
+            a_default, b_default = ab[lt]
+            a = pm.a if pm.a is not None else a_default
+            b = pm.b if pm.b is not None else b_default
+            fan_in = pm.width_dim
+            has_params = pm.weight is not None
+
+            # Set output scale
+            pm.scale = fan_in ** (-a) if a != 0.0 else 1.0
+
+            if has_params:
+                c = self._c_prev[name]
+
+                # Re-initialise weights
+                inner = pm.inner
+                assert inner is not None
+                init_std = std_prefactor * (fan_in ** (-b))
+                with torch.no_grad():
+                    if self._resample_w0:
+                        seed = torch.randint(0, 2**31, (1,)).item()
+                        pm._w0_seed = seed
+                        pm._w0_std = init_std
+                        gen = torch.Generator(device=pm.weight.device)
+                        gen.manual_seed(seed)
+                        pm.weight.normal_(mean=0.0, std=init_std, generator=gen)
+                    else:
+                        pm.weight.normal_(mean=0.0, std=init_std)
+                    for pname, param in inner.named_parameters():
+                        if "bias" in pname:
+                            param.zero_()
+
+                # Build param group
+                params = list(inner.parameters())
+                for p in params:
+                    parametrized_ids.add(id(p))
+                groups.append({
+                    "params": params,
+                    "lr": self.lr_prefactor * (fan_in ** (-c)),
+                    "layer_name": name,
+                    "fan_in": fan_in,
+                    "c": float(c),
+                    "maxp_managed": True,
+                })
+
+        # Collect all other parameters (LayerNorm, etc.)
+        other = [
+            p for p in self.model.parameters()
+            if p.requires_grad and id(p) not in parametrized_ids
+        ]
+        if other:
+            groups.append({
+                "params": other,
+                "lr": self.lr_prefactor,
+                "layer_name": "_other",
+                "maxp_managed": False,
+            })
+
+        self._param_groups = groups
+
+        # c_target tracks the latest solver output; c blends toward it each step
+        self._c_target: dict[str, float] = {
+            group["layer_name"]: group["c"]
+            for group in groups if group.get("maxp_managed", False)
+        }
+
+        if optimizer is not None:
+            non_lr_defaults = {
+                k: v for k, v in optimizer.param_groups[0].items()
+                if k not in ("lr", "params")
+            }
+            optimizer.param_groups[:] = [{**g, **non_lr_defaults} for g in groups]
+            # Reset state that referenced the old (now-dead) parameter ids
+            optimizer.state.clear()
 
     # ------------------------------------------------------------------
     # Phase 2: dynamic alignment
@@ -402,12 +424,15 @@ class Parametrization:
         captured = self._capture_activations(sample_input)
 
         for name, pm in self._pms:
-            if pm.inner is not None and name in captured:
+            if pm.inner is not None and pm.weight is not None and name in captured:
                 pm._z0 = captured[name]
                 if not self._resample_w0:
-                    pm._w0 = pm.weight.detach().clone()
+                    _w = pm.weight.detach()
+                    if hasattr(_w, "to_local"):
+                        _w = _w.to_local()
+                    pm._w0 = _w.clone()
 
-        if self._use_training_activations:
+        if self._use_training_activations and not self._persistent_hooks:
             self.register_hooks()
 
     def _regenerate_w0(self, pm: ParametrizedModule) -> torch.Tensor:
@@ -427,6 +452,7 @@ class Parametrization:
         ema = self._c_ema
         for group in self._param_groups:
             if not group.get("maxp_managed", False):
+                group["lr"] = self.lr_prefactor
                 continue
             if ema > 0:
                 name = group["layer_name"]
@@ -502,7 +528,10 @@ class Parametrization:
             z0 = pm._z0
             w0 = self._regenerate_w0(pm) if self._resample_w0 else pm._w0
             z = current[name]
-            w = pm.weight.detach().clone()
+            w = pm.weight.detach()
+            if hasattr(w, "to_local"):
+                w = w.to_local()
+            w = w.clone()
             new_a0_dW, new_dZ_w0, new_dZ_dW = compute_alignment(
                 z0, w0, z, w, fan_in=pm.width_dim
             )
