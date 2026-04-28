@@ -13,7 +13,7 @@ from torchtitan.distributed.pipeline_parallel import pipeline_llm
 from torchtitan.models.common import Embedding, Linear, RMSNorm, RoPE, compute_ffn_hidden_dim
 from torchtitan.models.common.config_utils import get_attention_config, make_ffn_config, make_gqa_config
 from torchtitan.models.common.param_init import depth_scaled_std
-from torchtitan.models.llama3 import parallelize_llama
+from torchtitan.models.llama3 import parallelize_llama as _parallelize_llama
 from torchtitan.models.llama3.model import Llama3Model, Llama3TransformerBlock
 from torchtitan.models.llama3.state_dict_adapter import Llama3StateDictAdapter
 from torchtitan.protocols.model_spec import ModelSpec
@@ -118,6 +118,15 @@ def _make_model_config(
             attn_backend=attn_backend,
         ),
     )
+
+
+def parallelize_llama(model, **kwargs):
+    # Force reshard_after_forward="always" so no_grad forwards used for
+    # alignment measurement don't leave norm+output layers unsharded.
+    parallelism = kwargs.get("parallelism")
+    if parallelism is not None:
+        parallelism.fsdp_reshard_after_forward = "always"
+    return _parallelize_llama(model, **kwargs)
 
 
 # Scale definitions: (dim, n_layers, n_heads, n_kv_heads[, vocab_size])

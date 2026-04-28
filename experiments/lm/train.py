@@ -51,10 +51,9 @@ class MaxPTrainer(Trainer):
         if needs_capture:
             batch = next(data_iterator)
             tokens = batch[0]["input"].detach()
-            model_to_opt = dict(zip(self.model_parts, self.optimizers.optimizers))
             for model in needs_capture:
                 model._maxp_sample_x = tokens
-                model._maxp_param.capture_initial(tokens, optimizer=model_to_opt[model])
+                model._maxp_param.capture_initial(tokens)
                 model._maxp_ready = True
 
         super().train_step(data_iterator)

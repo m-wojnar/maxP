@@ -35,7 +35,7 @@ from string import Template
 SCALE_CONFIGS = {
     "s1": {"wall": "02:00:00", "nodes": 1, "gpus": 1},
     "s2": {"wall": "04:00:00", "nodes": 1, "gpus": 1},
-    "s3": {"wall": "24:00:00", "nodes": 1, "gpus": 2},
+    "s3": {"wall": "24:00:00", "nodes": 1, "gpus": 1},
     "s4": {"wall": "48:00:00", "nodes": 1, "gpus": 4},
     "s5": {"wall": "48:00:00", "nodes": 1, "gpus": 4},
 }
