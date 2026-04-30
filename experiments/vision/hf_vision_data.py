@@ -115,7 +115,7 @@ def build_dataloaders(
 
     preset = DATASET_CONFIGS.get(dataset_name)
 
-    train_stream = load_dataset(preset.dataset_id, split=preset.train_split, streaming=True)
+    train_stream = load_dataset(preset.dataset_id, split=preset.train_split, streaming=False)
     train_stream = train_stream.shuffle(buffer_size=train_shuffle_buffer, seed=seed)
     train_ds = HFVisionIterableDataset(train_stream, preset=preset, transform=train_transform)
     train_loader = make_loader(
@@ -126,7 +126,7 @@ def build_dataloaders(
         prefetch_factor=prefetch_factor,
     )
     
-    val_stream = load_dataset(preset.dataset_id, split=preset.val_split, streaming=True)
+    val_stream = load_dataset(preset.dataset_id, split=preset.val_split, streaming=False)
     val_ds = HFVisionIterableDataset(val_stream, preset=preset, transform=eval_transform)
     val_loader = make_loader(
         val_ds,
