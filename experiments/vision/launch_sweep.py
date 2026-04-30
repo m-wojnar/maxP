@@ -117,7 +117,7 @@ python experiments/vision/train.py \\
   --method ${method} \\
   --lr ${lr} \\
   --seed ${seed} \\
-  --dataset ${train_dataset} \\
+  --dataset ${dataset} \\
   --epochs ${epochs} \\
   --batch-size ${batch_size} \\
   --num-workers ${num_workers} \\
@@ -155,7 +155,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--venv-path", required=True)
     parser.add_argument("--repo-path", required=True)
 
-    parser.add_argument("--train-dataset", default="imagenet12k")
+    parser.add_argument("--dataset", default="imagenet12k")
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--num-workers", type=int, default=8)
@@ -173,7 +173,6 @@ def main() -> None:
     methods = args.methods or sc["methods"]
     lrs = args.lrs or sc["lrs"]
     seeds = args.seeds or sc["seeds"]
-    gpus_per_node = args.gpus_per_node if args.gpus_per_node is not None else sc["gpus"]
 
     today = date.today().strftime("%Y-%m-%d")
     submitted = skipped = 0
@@ -202,16 +201,11 @@ def main() -> None:
                     repo_path=args.repo_path,
                     method=method,
                     lr=lr,
-                    train_dataset=args.train_dataset,
+                    dataset=args.dataset,
                     epochs=args.epochs,
                     batch_size=args.batch_size,
                     num_workers=args.num_workers,
                     val_steps=args.val_steps,
-                    gpus_per_node=gpus_per_node,
-                    cpus_per_gpu=args.cpus_per_gpu,
-                    mem_per_gpu=args.mem_per_gpu,
-                    account=args.account,
-                    partition=args.partition,
                     extra_train_args=args.extra_train_args,
                 )
                 script_path = out_dir / "job.sh"
