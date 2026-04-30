@@ -9,8 +9,6 @@ from datetime import date
 from pathlib import Path
 from string import Template
 
-from hf_vision_data import DATASET_CONFIGS
-
 
 ALL_LRS = [3e-4, 1e-3, 3e-3, 1e-2, 3e-2, 1e-1, 3e-1]
 TRANSFER_LR = [1e-2]
@@ -96,18 +94,21 @@ SLURM_TEMPLATE = Template(
 #!/bin/bash -l
 #SBATCH --job-name maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}
 #SBATCH --nodes 1
-#SBATCH --cpus-per-gpu ${cpus_per_gpu}
-#SBATCH --mem-per-gpu ${mem_per_gpu}
+#SBATCH --cpus-per-gpu 72
+#SBATCH --mem-per-gpu 118GB
 #SBATCH --time ${wall_time}
-#SBATCH --account ${account}
-#SBATCH --partition ${partition}
+#SBATCH --account plgadlers-gpu-gh200
+#SBATCH --partition plgrid-gpu-gh200
 #SBATCH --gres gpu:${gpus_per_node}
 #SBATCH --output ${output_dir}/maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}.out
 #SBATCH --error  ${output_dir}/maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}.err
 
+module add ML-bundle/25.10
 source "${venv_path}/bin/activate"
 cd "${repo_path}"
 
+export OMP_NUM_THREADS=16
+export HF_HOME="$${HF_HOME:-/net/scratch/hscra/plgrid/plgmwojnar/hf}"
 export WANDB_PROJECT="$${WANDB_PROJECT:-maxP-vision}"
 export WANDB_RUN_NAME="maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}"
 
@@ -117,7 +118,6 @@ python experiments/vision/train.py \\
   --lr ${lr} \\
   --seed ${seed} \\
   --dataset ${train_dataset} \\
-  --lr-warmup ${lr_warmup} \\
   --epochs ${epochs} \\
   --batch-size ${batch_size} \\
   --num-workers ${num_workers} \\
@@ -160,14 +160,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--val-steps", type=int, default=500)
-    parser.add_argument("--lr-warmup", type=int, default=None)
-    parser.add_argument("--warmup-ratio", type=float, default=0.05)
-
-    parser.add_argument("--gpus-per-node", type=int, default=None)
-    parser.add_argument("--cpus-per-gpu", type=int, default=16)
-    parser.add_argument("--mem-per-gpu", default="64GB")
-    parser.add_argument("--account", default="plgadlers-gpu-gh200")
-    parser.add_argument("--partition", default="plgrid-gpu-gh200")
 
     parser.add_argument("--extra-train-args", default="")
     parser.add_argument("--dry-run", action="store_true")
@@ -182,9 +174,6 @@ def main() -> None:
     lrs = args.lrs or sc["lrs"]
     seeds = args.seeds or sc["seeds"]
     gpus_per_node = args.gpus_per_node if args.gpus_per_node is not None else sc["gpus"]
-    train_samples = DATASET_CONFIGS[args.train_dataset].train_samples
-    total_steps = max(1, train_samples // args.batch_size) * args.epochs
-    lr_warmup = args.lr_warmup or int(round(args.warmup_ratio * total_steps))
 
     today = date.today().strftime("%Y-%m-%d")
     submitted = skipped = 0
@@ -214,7 +203,6 @@ def main() -> None:
                     method=method,
                     lr=lr,
                     train_dataset=args.train_dataset,
-                    lr_warmup=lr_warmup,
                     epochs=args.epochs,
                     batch_size=args.batch_size,
                     num_workers=args.num_workers,
