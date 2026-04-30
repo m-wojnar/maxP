@@ -99,7 +99,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prefetch-factor", type=int, default=4)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--val-interval", type=int, default=500)
-    parser.add_argument("--val-steps", type=int, default=None)
+    parser.add_argument("--val-steps", type=int, default=50)
     parser.add_argument("--alignment-warmup", type=int, default=100)
     parser.add_argument("--solve-interval", type=int, default=200)
     parser.add_argument("--sample-size", type=int, default=32)
@@ -282,7 +282,7 @@ def main() -> None:
                 last_log_seen = total_seen
 
                 if global_step % args.val_interval == 0:
-                    val_interval = evaluate(
+                    eval_metrics = evaluate(
                         model=model,
                         loader=val_loader,
                         device=device,
@@ -291,7 +291,7 @@ def main() -> None:
                         num_classes=num_classes,
                     )
                 else:
-                    val_interval = {}
+                    eval_metrics = {}
 
                 row: dict[str, Any] = {
                     "step": global_step,
@@ -302,7 +302,7 @@ def main() -> None:
                     "perf/samples_per_sec_interval": interval_sps,
                     "lr/lr_prefactor": current_lr_prefactor(optimizer),
                     **collect_layer_lrs(param),
-                    **val_interval,
+                    **eval_metrics,
                 }
                 if dynamic:
                     row.update(collect_alignments(param))
@@ -316,9 +316,12 @@ def main() -> None:
 
                 val_loss_print = row.get("loss/val_loss")
                 val_txt = f" val_loss={val_loss_print:.4f}" if isinstance(val_loss_print, float) else ""
+                ts = time.strftime("%Y-%m-%d %H:%M:%S")
                 print(
-                    f"[step {global_step}] loss={row['loss/train_loss']:.4f}{val_txt}"
-                    f" sps={interval_sps:.1f}"
+                    f"[{ts}] [step {global_step:7d}] "
+                    f"loss={row['loss/train_loss']:.4f}"
+                    f"{val_txt} "
+                    f"sps={interval_sps:8.1f}"
                 )
 
             if args.checkpoint_interval and global_step % args.checkpoint_interval == 0:

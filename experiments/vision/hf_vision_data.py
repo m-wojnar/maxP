@@ -81,7 +81,6 @@ def make_loader(
         "num_workers": num_workers,
         "pin_memory": torch.cuda.is_available(),
         "drop_last": is_train,
-        "shuffle": is_train,
         "persistent_workers": (num_workers > 0),
     }
     if num_workers > 0:
