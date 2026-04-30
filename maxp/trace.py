@@ -125,13 +125,21 @@ def _propagate_pm_tags(cls, func, args, wrapped_out):
     """
     from maxp.dag import MergeType
 
-    # Collect distinct tag sets from tensor inputs
+    # Collect distinct tag sets from tensor inputs (recurse into list/tuple
+    # args so that ops like torch.cat, which pass tensors in a list, are handled).
     input_tag_sets: list[frozenset[str]] = []
-    for arg in args:
-        if isinstance(arg, _TracingTensor):
-            tags = getattr(arg, '_pm_tags', frozenset())
+
+    def _collect(obj):
+        if isinstance(obj, _TracingTensor):
+            tags = getattr(obj, '_pm_tags', frozenset())
             if tags and tags not in input_tag_sets:
                 input_tag_sets.append(tags)
+        elif isinstance(obj, (tuple, list)):
+            for item in obj:
+                _collect(item)
+
+    for arg in args:
+        _collect(arg)
 
     if not input_tag_sets:
         return
@@ -169,6 +177,7 @@ _TRACED_OPS: dict[Any, str] = {
     torch.addmm: "addmm",
     F.linear: "linear",
     F.embedding: "embedding",
+    F.conv2d: "conv2d",
 }
 
 

@@ -83,14 +83,35 @@ experiments/lm/        # LLaMA-3 pre-training experiments (torchtitan)
 ├── maxp_llama3.py     # LLaMA-3 scale configs (debug, s1–s5) + compute_steps
 ├── maxp_converter.py  # Post-optimizer-build hook; wires up Parametrization
 ├── launch_sweep.py    # Generate and submit SLURM jobs for full LR sweep
+├── fineweb.py         # FineWeb-Edu dataset registration for torchtitan
+├── download_hf_assets.py  # HuggingFace asset downloader (from torchtitan)
 ├── run.sh             # Submit a sweep for one scale
 ├── run_debug.sh       # Quick single-GPU debug run
 └── coord_check.py     # Coord check for the parametrized LLaMA-3 model
+
+experiments/vision/    # ViT/ConvNeXt-V2 experiments (timm)
+├── train.py           # Main training entry point (single-GPU, streaming HF data)
+├── maxp_timm.py       # timm model registry + automatic ParametrizedModule wrappers
+├── hf_vision_data.py  # HF streaming train/val pipeline + transforms
+├── launch_sweep.py    # Generate and submit SLURM jobs for full LR sweep
+├── run.sh             # Submit a sweep for one vision scale
+├── run_debug.sh       # Quick tiny-model debug run (CPU/GPU)
+└── coord_check.py     # Lightweight coord-style diagnostic for wrapped models
 ```
 
 **Phase 1** (static, at init): discover PMs → reinit weights → solve LP → build param groups.
 
 **Phase 2** (dynamic, per step): capture activations → measure alignment → re-solve LP → update per-layer LRs.
+
+### Vision experiment quick start
+
+```bash
+# CPU/GPU debug smoke test (small model + tiny dataset slice)
+bash experiments/vision/run_debug.sh --steps 20
+
+# Launch full SLURM sweep for one scale
+bash experiments/vision/run.sh vit-s
+```
 
 
 ## ParametrizedModule
@@ -143,6 +164,11 @@ param = Parametrization(
     solve_interval=1,            # re-solve every N steps
     sample_size=32,              # max batch size for alignment measurement
     c_ema=0.0,                   # EMA smoothing for c values (0 = instant)
+    alignment_ema=0.0,           # EMA smoothing for measured alignment values
+    resample_w0=False,           # re-sample w0 snapshot each solve
+    use_training_activations=False,  # use activations from training forward pass
+    solver=None,                 # custom PuLP solver (default: CBC)
+    warm_start=False,            # warm-start LP from previous c solution
 )
 
 # Param groups for optimizer
@@ -270,8 +296,8 @@ def make_input(width):
     return torch.randint(0, vocab_size, (4, seq_len))
 
 all_ops, affected, act_stats = diagnose_axis(make_model, make_input, widths)
-print_axis(all_ops, affected, act_stats, widths)
-plot_axis(all_ops, affected, act_stats, widths, path="coord_check.png")
+print_axis("width", all_ops, affected, act_stats, widths)
+plot_axis("width", all_ops, affected, act_stats, widths, filename="coord_check.png")
 ```
 
 `print_axis` shows how the RMS of each op's output scales with width. For a correctly parametrized model, activations should be roughly **constant** (slope ≈ 0 in log-log) at init and remain stable after a few training steps.

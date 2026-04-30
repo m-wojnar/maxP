@@ -1,0 +1,236 @@
+"""timm model registry and ParametrizedModule wrappers for vision experiments."""
+
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Optional, Type
+
+import timm
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from timm.layers import Attention, maybe_add_mask, resolve_self_attn_mask
+
+from maxp import ParametrizedModule
+
+
+@dataclass(frozen=True, slots=True)
+class ScaleConfig:
+    model_name: str
+    family: str
+    image_size: int
+    drop_path_rate: float
+
+
+SCALE_CONFIGS: dict[str, ScaleConfig] = {
+    "debug": ScaleConfig(
+        model_name="vit_tiny_patch16_224", family="vit", image_size=224, drop_path_rate=0.0
+    ),
+    "vit-s": ScaleConfig(
+        model_name="vit_small_patch16_224", family="vit", image_size=224, drop_path_rate=0.1
+    ),
+    "vit-b": ScaleConfig(
+        model_name="vit_base_patch16_224", family="vit", image_size=224, drop_path_rate=0.2
+    ),
+    "vit-l": ScaleConfig(
+        model_name="vit_large_patch16_224", family="vit", image_size=224, drop_path_rate=0.4
+    ),
+    "cnx-t": ScaleConfig(
+        model_name="convnextv2_tiny", family="convnext", image_size=224, drop_path_rate=0.1
+    ),
+    "cnx-s": ScaleConfig(
+        model_name="convnextv2_small", family="convnext", image_size=224, drop_path_rate=0.2
+    ),
+    "cnx-b": ScaleConfig(
+        model_name="convnextv2_base", family="convnext", image_size=224, drop_path_rate=0.3
+    ),
+    "cnx-l": ScaleConfig(
+        model_name="convnextv2_large", family="convnext", image_size=224, drop_path_rate=0.4
+    ),
+}
+
+
+class _ScaledAttention(Attention):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        d_model = kwargs.get("dim", args[0] if len(args) > 0 else None)
+        num_heads = kwargs.get("num_heads", args[1] if len(args) > 1 else None)
+        head_dim = kwargs.get("attn_head_dim", args[2] if len(args) > 2 else d_model // num_heads)
+        
+        self.scale = 1.0 / head_dim
+        self.qk_score = ParametrizedModule(
+            lambda q, k: (q, k), width_dim=head_dim,
+            layer_type="readout", scale_output=False
+        )
+    
+    def forward(
+            self,
+            x: torch.Tensor,
+            attn_mask: Optional[torch.Tensor] = None,
+            is_causal: bool = False,
+    ) -> torch.Tensor:
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)
+        q, k = self.qk_score(q, k)
+        q, k = self.q_norm(q), self.k_norm(k)
+
+        if self.fused_attn:
+            x = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=attn_mask,
+                dropout_p=self.attn_drop.p if self.training else 0.,
+                is_causal=is_causal,
+                scale=self.scale,
+            )
+        else:
+            q = q * self.scale
+            attn = q @ k.transpose(-2, -1)
+            attn_bias = resolve_self_attn_mask(N, attn, attn_mask, is_causal)
+            attn = maybe_add_mask(attn, attn_bias)
+            attn = attn.softmax(dim=-1)
+            attn = self.attn_drop(attn)
+            x = attn @ v
+
+        x = x.transpose(1, 2).reshape(B, N, self.attn_dim)
+        x = self.norm(x)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
+def create_model(
+    *,
+    scale: str,
+    num_classes: int,
+    image_size: int | None = None,
+) -> nn.Module:
+    cfg = SCALE_CONFIGS.get(scale)
+    img_size = image_size if image_size is not None else cfg.image_size
+    resolved_drop_path = cfg.drop_path_rate
+
+    kwargs: dict = {
+        "pretrained": False,
+        "num_classes": num_classes,
+        "drop_path_rate": resolved_drop_path,
+    }
+
+    if cfg.family == "vit":
+        kwargs["img_size"] = img_size
+        kwargs["attn_layer"] = _ScaledAttention
+
+    model = timm.create_model(cfg.model_name, **kwargs)
+    return model
+
+
+def _conv_width_dim(module: nn.Conv2d) -> int:
+    # For depthwise convs (groups == in_channels), fan-in stays constant (k*k),
+    # so use channel width to preserve scaling across model sizes.
+    if module.groups == module.in_channels and module.in_channels == module.out_channels:
+        return module.in_channels
+    k_h, k_w = module.kernel_size
+    return (module.in_channels // module.groups) * k_h * k_w
+
+
+def _get_child(module: nn.Module, key: str) -> nn.Module:
+    if key.isdigit():
+        return module[int(key)]  # type: ignore[index]
+    return getattr(module, key)
+
+
+def _set_child(module: nn.Module, key: str, child: nn.Module) -> None:
+    if key.isdigit():
+        module[int(key)] = child  # type: ignore[index]
+        return
+    setattr(module, key, child)
+
+
+def _resolve_parent_and_key(root: nn.Module, module_path: str) -> tuple[nn.Module, str]:
+    parts = module_path.split(".")
+    if not parts:
+        raise ValueError("Empty module path.")
+    parent = root
+    for key in parts[:-1]:
+        parent = _get_child(parent, key)
+    return parent, parts[-1]
+
+
+def _get_module(root: nn.Module, module_path: str) -> nn.Module:
+    parent, key = _resolve_parent_and_key(root, module_path)
+    return _get_child(parent, key)
+
+
+def _wrap_module(model: nn.Module, module_path: str, width_dim: int, layer_type: str, **pm_kw) -> bool:
+    parent, key = _resolve_parent_and_key(model, module_path)
+    module = _get_child(parent, key)
+    if isinstance(module, ParametrizedModule):
+        return False
+    wrapped = ParametrizedModule(module, width_dim=width_dim, layer_type=layer_type, **pm_kw)
+    _set_child(parent, key, wrapped)
+    return True
+
+
+def _install_vit_wrappers(model: nn.Module):
+    embed_dim = int(getattr(model, "embed_dim"))
+
+    for block in model.blocks:
+        attn = block.attn
+        ffn = block.mlp
+        
+        _wrap_module(attn, "qkv", embed_dim, "hidden")
+        _wrap_module(attn, "proj", embed_dim, "hidden")
+        
+        _wrap_module(ffn, "fc1", block.mlp.fc1.in_features, "hidden")
+        _wrap_module(ffn, "fc2", block.mlp.fc2.in_features, "hidden")
+    
+    _wrap_module(model, "patch_embed.proj", embed_dim, "embedding")
+    # _wrap_module(model, "pos_embed", embed_dim, "embedding")
+    # _wrap_module(model, "cls_token", embed_dim, "embedding")
+    _wrap_module(model, "head", embed_dim, "readout", a=0.0)
+
+
+def _convnext_layer_type(name: str) -> str:
+    if name.startswith("stem") or name.startswith("downsample_layers.0"):
+        return "embedding"
+    if name.startswith("head"):
+        return "readout"
+    return "hidden"
+
+
+def _install_convnext_wrappers(model: nn.Module) -> list[str]:
+    wrapped: list[str] = []
+    targets: list[tuple[str, int, str]] = []
+
+    for name, module in model.named_modules():
+        if isinstance(module, ParametrizedModule):
+            continue
+        if isinstance(module, nn.Linear):
+            targets.append((name, _linear_width_dim(module), _convnext_layer_type(name)))
+        elif isinstance(module, nn.Conv2d):
+            targets.append((name, _conv_width_dim(module), _convnext_layer_type(name)))
+
+    for module_path, width_dim, layer_type in targets:
+        if _wrap_module(
+            model,
+            module_path,
+            width_dim=width_dim,
+            layer_type=layer_type,
+        ):
+            wrapped.append(module_path)
+
+    return wrapped
+
+
+def install_pm_wrappers(model: nn.Module):
+    if "visiontransformer" in model.__class__.__name__.lower():
+        _install_vit_wrappers(model)
+    elif "convnext" in model.__class__.__name__.lower():
+        _install_convnext_wrappers(model)
+    else:
+        raise TypeError(
+            "Unsupported timm model type. Expected ViT or ConvNeXt-like model."
+        )
+
+
+def count_trainable_params(model: nn.Module) -> int:
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
