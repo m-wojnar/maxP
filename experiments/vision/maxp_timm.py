@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional, Type
+from typing import Optional
 
 import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from timm.layers import Attention, maybe_add_mask, resolve_self_attn_mask
+from timm.layers import Attention, PatchEmbed, maybe_add_mask, resolve_self_attn_mask
+from timm.layers.format import Format, nchw_to
 
 from maxp import ParametrizedModule
 
@@ -97,6 +98,48 @@ class _ScaledAttention(Attention):
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
+    
+
+class _Patchify(nn.Module):
+    def __init__(self, patch_size: tuple[int, int]):
+        super().__init__()
+        self.patch_size = patch_size
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = x.shape
+        p_h, p_w = self.patch_size
+        assert H % p_h == 0 and W % p_w == 0, "Image dimensions must be divisible by patch size."
+        x = x.reshape(B, C, H // p_h, p_h, W // p_w, p_w)
+        x = x.permute(0, 2, 4, 3, 5, 1).reshape(B, (H // p_h) * (W // p_w), C * p_h * p_w)
+        return x
+
+
+class _LinearPatchEmbed(PatchEmbed):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        patch_dim = self.proj.in_channels * self.patch_size[0] * self.patch_size[1]
+        self.proj = nn.Linear(patch_dim, self.proj.out_channels)
+        self.patchify = _Patchify(self.patch_size)
+
+    def forward(self, x):
+        _, _, H, W = x.shape
+        
+        if self.dynamic_img_pad:
+            pad_h = (self.patch_size[0] - H % self.patch_size[0]) % self.patch_size[0]
+            pad_w = (self.patch_size[1] - W % self.patch_size[1]) % self.patch_size[1]
+            x = F.pad(x, (0, pad_w, 0, pad_h))
+            
+        x = self.patchify(x)
+        x = self.proj(x)
+        x = x.transpose(1, 2).reshape(x.size(0), -1, H // self.patch_size[0], W // self.patch_size[1])
+        
+        if self.flatten:
+            x = x.flatten(2).transpose(1, 2)  # NCHW -> NLC
+        elif self.output_fmt != Format.NCHW:
+            x = nchw_to(x, self.output_fmt)
+        
+        x = self.norm(x)
+        return x
 
 
 def create_model(
@@ -118,6 +161,7 @@ def create_model(
     if cfg.family == "vit":
         kwargs["img_size"] = img_size
         kwargs["attn_layer"] = _ScaledAttention
+        kwargs["embed_layer"] = _LinearPatchEmbed
 
     model = timm.create_model(cfg.model_name, **kwargs)
     return model

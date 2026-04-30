@@ -33,6 +33,16 @@ DATASET_CONFIGS: dict[str, DatasetPreset] = {
         image_key="jpg",
         label_key="cls",
     ),
+    "beans": DatasetPreset(
+        dataset_id="AI-Lab-Makerere/beans",
+        train_split="train",
+        val_split="validation",
+        num_classes=3,
+        train_samples=1034,
+        val_samples=133,
+        image_key="image",
+        label_key="labels",
+    ),
 }
 
 

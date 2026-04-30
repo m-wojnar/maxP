@@ -34,6 +34,7 @@ def evaluate(
     device: torch.device,
     amp_enabled: bool,
     max_steps: int | None = None,
+    num_classes: int | None = None,
 ) -> dict[str, float]:
 
     model.eval()
@@ -55,9 +56,10 @@ def evaluate(
             preds = logits.argmax(dim=1)
             total_loss += float(loss.item()) * xb.size(0)
             total_correct += int((preds == yb).sum().item())
-            total_top5 += int(
-                (logits.topk(5, dim=1).indices == yb.unsqueeze(1)).any(dim=1).sum().item()
-            )
+            if num_classes is not None and num_classes >= 5:
+                total_top5 += int(
+                    (logits.topk(5, dim=1).indices == yb.unsqueeze(1)).any(dim=1).sum().item()
+                )
             total_count += int(xb.size(0))
             steps += 1
 
@@ -96,6 +98,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--prefetch-factor", type=int, default=2)
     parser.add_argument("--max-steps", type=int, default=None)
+    parser.add_argument("--val-interval", type=int, default=500)
     parser.add_argument("--val-steps", type=int, default=None)
     parser.add_argument("--alignment-warmup", type=int, default=100)
     parser.add_argument("--solve-interval", type=int, default=200)
@@ -242,25 +245,19 @@ def main() -> None:
                 align_sample = xb[:args.sample_size].detach().clone().to(device)
                 param.capture_initial(align_sample)
 
-            optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad()
 
             with torch.autocast(device.type, torch.bfloat16, amp_enabled):
                 logits = model(xb)
                 loss = smooth_xe_loss(logits, yb)
 
-            if not math.isfinite(float(loss.item())):
-                raise RuntimeError(f"Non-finite loss at step {global_step + 1}: {loss.item()}")
-
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optimizer.step()
-
-            if scheduler is not None:
-                scheduler.step()
+            scheduler.step(global_step)
 
             if dynamic:
-                if scheduler is not None:
-                    param.lr_prefactor = current_lr_prefactor(optimizer)
+                param.lr_prefactor = current_lr_prefactor(optimizer)
                 param.step(align_sample, optimizer)
 
             global_step += 1
@@ -275,13 +272,17 @@ def main() -> None:
                 last_log_time = now
                 last_log_seen = total_seen
 
-                val_interval = evaluate(
-                    model=model,
-                    loader=val_loader,
-                    device=device,
-                    amp_enabled=amp_enabled,
-                    max_steps=args.val_steps,
-                )
+                if global_step % args.val_interval == 0:
+                    val_interval = evaluate(
+                        model=model,
+                        loader=val_loader,
+                        device=device,
+                        amp_enabled=amp_enabled,
+                        max_steps=args.val_steps,
+                        num_classes=num_classes,
+                    )
+                else:
+                    val_interval = {}
 
                 row: dict[str, Any] = {
                     "step": global_step,
@@ -304,10 +305,10 @@ def main() -> None:
                     for key, value in row.items():
                         tb_writer.add_scalar(key, value, global_step)
 
-                val_loss_print = row.get("val_loss")
+                val_loss_print = row.get("loss/val_loss")
                 val_txt = f" val_loss={val_loss_print:.4f}" if isinstance(val_loss_print, float) else ""
                 print(
-                    f"[step {global_step}] loss={row['train_loss']:.4f}{val_txt}"
+                    f"[step {global_step}] loss={row['loss/train_loss']:.4f}{val_txt}"
                     f" sps={interval_sps:.1f}"
                 )
 
@@ -333,7 +334,8 @@ def main() -> None:
         model=model,
         loader=val_loader,
         device=device,
-        amp_enabled=amp_enabled
+        amp_enabled=amp_enabled,
+        num_classes=num_classes,
     )
     elapsed = time.time() - t0
 
