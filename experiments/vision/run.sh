@@ -5,7 +5,7 @@
 #   bash experiments/vision/run.sh vit-s [extra launch_sweep.py flags ...]
 set -euo pipefail
 
-SCALE="${1:?Usage: $0 <debug|vit-s|vit-b|vit-l|cnx-t|cnx-s|cnx-b|cnx-l> [extra launch_sweep.py flags]}"
+SCALE="${1:?Usage: $0 <debug|vit-s|vit-b|vit-l|mlp-s|mlp-m|mlp-b|mlp-l> [extra launch_sweep.py flags]}"
 shift
 
 case "$SCALE" in
@@ -13,11 +13,11 @@ case "$SCALE" in
     vit-s) METHODS="maxP mup-full mup-no"; LRS="3e-4 1e-3 3e-3 1e-2 3e-2 1e-1 3e-1 1.0 3.0"; SEEDS="1 2 3" ;;
     vit-b) METHODS="maxP mup-full mup-no"; LRS="3e-4 1e-3 3e-3 1e-2 3e-2 1e-1 3e-1 1.0 3.0"; SEEDS="1" ;;
     vit-l) METHODS="maxP mup-full mup-no"; LRS="${TRANSFER_LR:-1e-2}"; SEEDS="1" ;;
-    cnx-t) METHODS="maxP mup-full mup-no"; LRS="3e-4 1e-3 3e-3 1e-2 3e-2 1e-1 3e-1 1.0 3.0"; SEEDS="1 2 3" ;;
-    cnx-s) METHODS="maxP mup-full mup-no"; LRS="3e-4 1e-3 3e-3 1e-2 3e-2 1e-1 3e-1 1.0 3.0"; SEEDS="1" ;;
-    cnx-b) METHODS="maxP mup-full mup-no"; LRS="${TRANSFER_LR:-1e-2}"; SEEDS="1" ;;
-    cnx-l) METHODS="maxP mup-full mup-no"; LRS="${TRANSFER_LR:-1e-2}"; SEEDS="1" ;;
-    *) echo "Unknown scale '$SCALE'. Choose from debug vit-s vit-b vit-l cnx-t cnx-s cnx-b cnx-l."; exit 1 ;;
+    mlp-s) METHODS="maxP mup-full mup-no"; LRS="3e-4 1e-3 3e-3 1e-2 3e-2 1e-1 3e-1 1.0 3.0"; SEEDS="1 2 3" ;;
+    mlp-m) METHODS="maxP mup-full mup-no"; LRS="3e-4 1e-3 3e-3 1e-2 3e-2 1e-1 3e-1 1.0 3.0"; SEEDS="1" ;;
+    mlp-b) METHODS="maxP mup-full mup-no"; LRS="${TRANSFER_LR:-1e-2}"; SEEDS="1" ;;
+    mlp-l) METHODS="maxP mup-full mup-no"; LRS="${TRANSFER_LR:-1e-2}"; SEEDS="1" ;;
+    *) echo "Unknown scale '$SCALE'. Choose from debug vit-s vit-b vit-l mlp-s mlp-m mlp-b mlp-l."; exit 1 ;;
 esac
 
 RUNS_DIR="${RUNS_DIR:-/net/storage/pr3/plgrid/plggadlers/maxP/runs}"

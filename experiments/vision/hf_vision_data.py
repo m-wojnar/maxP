@@ -1,4 +1,4 @@
-"""HF streaming data pipeline for vision experiments."""
+"""HF non-streaming data pipeline for vision experiments."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Callable
 
 import torch
 from datasets import load_dataset
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import DataLoader, Dataset
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,55 +46,47 @@ DATASET_CONFIGS: dict[str, DatasetPreset] = {
 }
 
 
-class HFVisionIterableDataset(IterableDataset):
-    """Bridge HF streaming iterable datasets into torch IterableDataset."""
+class HFVisionDataset(Dataset):
+    """Map-style wrapper around a downloaded HF Dataset."""
 
-    def __init__(
-        self,
-        hf_stream,
-        *,
-        preset: DatasetPreset,
-        transform: Callable,
-    ) -> None:
+    def __init__(self, hf_dataset, *, preset: DatasetPreset, transform: Callable) -> None:
         super().__init__()
-        self._hf_stream = hf_stream
+        self._hf = hf_dataset
         self._preset = preset
         self._transform = transform
 
-    def __iter__(self):
-        for sample in self._hf_stream:
-            image = sample.get(self._preset.image_key)
-            image = image.convert("RGB")
-            label = sample.get(self._preset.label_key)
+    def __len__(self) -> int:
+        return len(self._hf)
 
-            x = self._transform(image)
-            y = torch.tensor(label, dtype=torch.long)
-
-            yield x, y
+    def __getitem__(self, idx: int):
+        sample = self._hf[idx]
+        image = sample[self._preset.image_key].convert("RGB")
+        label = sample[self._preset.label_key]
+        x = self._transform(image)
+        y = torch.tensor(label, dtype=torch.long)
+        return x, y
 
 
 def make_loader(
-    ds: IterableDataset,
+    ds: Dataset,
     *,
     batch_size: int,
     num_workers: int,
     is_train: bool,
     prefetch_factor: int,
 ) -> DataLoader:
-    kwargs = {
+    kwargs: dict = {
         "dataset": ds,
         "batch_size": batch_size,
         "num_workers": num_workers,
         "pin_memory": torch.cuda.is_available(),
         "drop_last": is_train,
+        "shuffle": is_train,
         "persistent_workers": (num_workers > 0),
     }
     if num_workers > 0:
         kwargs["prefetch_factor"] = prefetch_factor
-
-    return DataLoader(
-        **kwargs,
-    )
+    return DataLoader(**kwargs)
 
 
 def build_dataloaders(
@@ -103,8 +95,6 @@ def build_dataloaders(
     batch_size: int,
     num_workers: int,
     prefetch_factor: int = 2,
-    seed: int = 1,
-    train_shuffle_buffer: int = 10_000,
     train_transform=None,
     eval_transform=None,
 ) -> tuple[DataLoader, DataLoader | None, DatasetPreset]:
@@ -115,9 +105,8 @@ def build_dataloaders(
 
     preset = DATASET_CONFIGS.get(dataset_name)
 
-    train_stream = load_dataset(preset.dataset_id, split=preset.train_split, streaming=False)
-    train_stream = train_stream.shuffle(buffer_size=train_shuffle_buffer, seed=seed)
-    train_ds = HFVisionIterableDataset(train_stream, preset=preset, transform=train_transform)
+    train_hf = load_dataset(preset.dataset_id, split=preset.train_split, streaming=False)
+    train_ds = HFVisionDataset(train_hf, preset=preset, transform=train_transform)
     train_loader = make_loader(
         train_ds,
         batch_size=batch_size,
@@ -125,9 +114,9 @@ def build_dataloaders(
         is_train=True,
         prefetch_factor=prefetch_factor,
     )
-    
-    val_stream = load_dataset(preset.dataset_id, split=preset.val_split, streaming=False)
-    val_ds = HFVisionIterableDataset(val_stream, preset=preset, transform=eval_transform)
+
+    val_hf = load_dataset(preset.dataset_id, split=preset.val_split, streaming=False)
+    val_ds = HFVisionDataset(val_hf, preset=preset, transform=eval_transform)
     val_loader = make_loader(
         val_ds,
         batch_size=batch_size,

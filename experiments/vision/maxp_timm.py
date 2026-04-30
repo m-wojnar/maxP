@@ -19,7 +19,10 @@ class ScaleConfig:
     model_name: str
     family: str
     image_size: int
-    drop_path_rate: float
+    drop_path_rate: float = 0.0
+    hidden: int = 0
+    depth: int = 0
+    dropout: float = 0.0
 
 
 SCALE_CONFIGS: dict[str, ScaleConfig] = {
@@ -35,19 +38,80 @@ SCALE_CONFIGS: dict[str, ScaleConfig] = {
     "vit-l": ScaleConfig(
         model_name="vit_large_patch16_224", family="vit", image_size=224, drop_path_rate=0.4
     ),
-    "cnx-t": ScaleConfig(
-        model_name="convnextv2_tiny", family="convnext", image_size=224, drop_path_rate=0.1
+    "mlp-s": ScaleConfig(
+        model_name="mlp", family="mlp", image_size=224, hidden=256, depth=4, dropout=0.0
     ),
-    "cnx-s": ScaleConfig(
-        model_name="convnextv2_small", family="convnext", image_size=224, drop_path_rate=0.2
+    "mlp-m": ScaleConfig(
+        model_name="mlp", family="mlp", image_size=224, hidden=512, depth=6, dropout=0.1
     ),
-    "cnx-b": ScaleConfig(
-        model_name="convnextv2_base", family="convnext", image_size=224, drop_path_rate=0.3
+    "mlp-b": ScaleConfig(
+        model_name="mlp", family="mlp", image_size=224, hidden=1024, depth=8, dropout=0.2
     ),
-    "cnx-l": ScaleConfig(
-        model_name="convnextv2_large", family="convnext", image_size=224, drop_path_rate=0.4
+    "mlp-l": ScaleConfig(
+        model_name="mlp", family="mlp", image_size=224, hidden=2048, depth=8, dropout=0.3
     ),
 }
+
+
+class MLPBlock(nn.Module):
+    def __init__(self, hidden: int, dropout: float) -> None:
+        super().__init__()
+        self.norm = nn.LayerNorm(hidden)
+        self.linear = nn.Linear(hidden, hidden)
+        self.act = nn.GELU()
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.drop(self.act(self.linear(self.norm(x))))
+    
+
+class Patchify(nn.Module):
+    def __init__(self, patch_size: tuple[int, int]):
+        super().__init__()
+        self.patch_size = patch_size
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = x.shape
+        p_h, p_w = self.patch_size
+        assert H % p_h == 0 and W % p_w == 0, "Image dimensions must be divisible by patch size."
+        x = x.reshape(B, C, H // p_h, p_h, W // p_w, p_w)
+        x = x.permute(0, 2, 4, 3, 5, 1).reshape(B, (H // p_h) * (W // p_w), C * p_h * p_w)
+        return x
+
+
+class ScalableMLP(nn.Module):
+    def __init__(
+        self,
+        hidden: int,
+        depth: int,
+        num_classes: int,
+        dropout: float = 0.0,
+        image_size: int = 224,
+        patch_size: int = 16,
+    ) -> None:
+        super().__init__()
+        self.patch_size = (patch_size, patch_size)
+        in_features = 3 * patch_size * patch_size
+
+        self.patchify = Patchify(self.patch_size)
+        self.embed = nn.Linear(in_features, hidden)
+        self.blocks = nn.ModuleList([MLPBlock(hidden, dropout) for _ in range(depth)])
+        self.norm = nn.LayerNorm(hidden)
+        self.head = nn.Linear(hidden, num_classes)
+
+    def set_grad_checkpointing(self, enable: bool = False) -> None:
+        pass
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.patchify(x)
+        x = self.embed(x)
+        x = x.mean(dim=1)
+        
+        for block in self.blocks:
+            x = block(x)
+        
+        x = self.norm(x)
+        return self.head(x)
 
 
 class _ScaledAttention(Attention):
@@ -98,20 +162,6 @@ class _ScaledAttention(Attention):
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
-    
-
-class _Patchify(nn.Module):
-    def __init__(self, patch_size: tuple[int, int]):
-        super().__init__()
-        self.patch_size = patch_size
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = x.shape
-        p_h, p_w = self.patch_size
-        assert H % p_h == 0 and W % p_w == 0, "Image dimensions must be divisible by patch size."
-        x = x.reshape(B, C, H // p_h, p_h, W // p_w, p_w)
-        x = x.permute(0, 2, 4, 3, 5, 1).reshape(B, (H // p_h) * (W // p_w), C * p_h * p_w)
-        return x
 
 
 class _LinearPatchEmbed(PatchEmbed):
@@ -119,7 +169,7 @@ class _LinearPatchEmbed(PatchEmbed):
         super().__init__(*args, **kwargs)
         patch_dim = self.proj.in_channels * self.patch_size[0] * self.patch_size[1]
         self.proj = nn.Linear(patch_dim, self.proj.out_channels)
-        self.patchify = _Patchify(self.patch_size)
+        self.patchify = Patchify(self.patch_size)
 
     def forward(self, x):
         _, _, H, W = x.shape
@@ -150,30 +200,25 @@ def create_model(
 ) -> nn.Module:
     cfg = SCALE_CONFIGS.get(scale)
     img_size = image_size if image_size is not None else cfg.image_size
-    resolved_drop_path = cfg.drop_path_rate
+
+    if cfg.family == "mlp":
+        return ScalableMLP(
+            hidden=cfg.hidden,
+            depth=cfg.depth,
+            num_classes=num_classes,
+            dropout=cfg.dropout,
+            image_size=img_size,
+        )
 
     kwargs: dict = {
         "pretrained": False,
         "num_classes": num_classes,
-        "drop_path_rate": resolved_drop_path,
+        "drop_path_rate": cfg.drop_path_rate,
+        "img_size": img_size,
+        "attn_layer": _ScaledAttention,
+        "embed_layer": _LinearPatchEmbed,
     }
-
-    if cfg.family == "vit":
-        kwargs["img_size"] = img_size
-        kwargs["attn_layer"] = _ScaledAttention
-        kwargs["embed_layer"] = _LinearPatchEmbed
-
-    model = timm.create_model(cfg.model_name, **kwargs)
-    return model
-
-
-def _conv_width_dim(module: nn.Conv2d) -> int:
-    # For depthwise convs (groups == in_channels), fan-in stays constant (k*k),
-    # so use channel width to preserve scaling across model sizes.
-    if module.groups == module.in_channels and module.in_channels == module.out_channels:
-        return module.in_channels
-    k_h, k_w = module.kernel_size
-    return (module.in_channels // module.groups) * k_h * k_w
+    return timm.create_model(cfg.model_name, **kwargs)
 
 
 def _get_child(module: nn.Module, key: str) -> nn.Module:
@@ -233,46 +278,24 @@ def _install_vit_wrappers(model: nn.Module):
     _wrap_module(model, "head", embed_dim, "readout", a=0.0)
 
 
-def _convnext_layer_type(name: str) -> str:
-    if name.startswith("stem") or name.startswith("downsample_layers.0"):
-        return "embedding"
-    if name.startswith("head"):
-        return "readout"
-    return "hidden"
+def _install_mlp_wrappers(model: ScalableMLP) -> None:
+    hidden = model.embed.out_features
+    
+    for block in model.blocks:
+        _wrap_module(block, "linear", hidden, "hidden")
 
-
-def _install_convnext_wrappers(model: nn.Module) -> list[str]:
-    wrapped: list[str] = []
-    targets: list[tuple[str, int, str]] = []
-
-    for name, module in model.named_modules():
-        if isinstance(module, ParametrizedModule):
-            continue
-        if isinstance(module, nn.Linear):
-            targets.append((name, _linear_width_dim(module), _convnext_layer_type(name)))
-        elif isinstance(module, nn.Conv2d):
-            targets.append((name, _conv_width_dim(module), _convnext_layer_type(name)))
-
-    for module_path, width_dim, layer_type in targets:
-        if _wrap_module(
-            model,
-            module_path,
-            width_dim=width_dim,
-            layer_type=layer_type,
-        ):
-            wrapped.append(module_path)
-
-    return wrapped
+    _wrap_module(model, "embed", hidden, "embedding")
+    _wrap_module(model, "head", hidden, "readout", a=0.0)
 
 
 def install_pm_wrappers(model: nn.Module):
-    if "visiontransformer" in model.__class__.__name__.lower():
+    if isinstance(model, ScalableMLP):
+        _install_mlp_wrappers(model)
+    elif "visiontransformer" in model.__class__.__name__.lower():
         _install_vit_wrappers(model)
-    elif "convnext" in model.__class__.__name__.lower():
-        _install_convnext_wrappers(model)
     else:
         raise TypeError(
-            "Unsupported timm model type. Expected ViT or ConvNeXt-like model."
+            f"Unsupported model type: {model.__class__.__name__}. Expected ViT or ScalableMLP."
         )
 
 

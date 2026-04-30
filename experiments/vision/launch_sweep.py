@@ -50,8 +50,8 @@ SCALE_CONFIGS = {
         "image_size": 224,
         "drop_path_rate": 0.4,
     },
-    "cnx-t": {
-        "wall": "24:00:00",
+    "mlp-s": {
+        "wall": "6:00:00",
         "gpus": 1,
         "methods": ["maxP", "mup-full", "mup-no"],
         "lrs": ALL_LRS,
@@ -59,8 +59,8 @@ SCALE_CONFIGS = {
         "image_size": 224,
         "drop_path_rate": 0.1,
     },
-    "cnx-s": {
-        "wall": "36:00:00",
+    "mlp-m": {
+        "wall": "12:00:00",
         "gpus": 1,
         "methods": ["maxP", "mup-full", "mup-no"],
         "lrs": ALL_LRS,
@@ -68,8 +68,8 @@ SCALE_CONFIGS = {
         "image_size": 224,
         "drop_path_rate": 0.2,
     },
-    "cnx-b": {
-        "wall": "48:00:00",
+    "mlp-b": {
+        "wall": "12:00:00",
         "gpus": 1,
         "methods": ["maxP", "mup-full", "mup-no"],
         "lrs": TRANSFER_LR,
@@ -77,8 +77,8 @@ SCALE_CONFIGS = {
         "image_size": 224,
         "drop_path_rate": 0.3,
     },
-    "cnx-l": {
-        "wall": "72:00:00",
+    "mlp-l": {
+        "wall": "24:00:00",
         "gpus": 1,
         "methods": ["maxP", "mup-full", "mup-no"],
         "lrs": TRANSFER_LR,

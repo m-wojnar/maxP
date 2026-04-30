@@ -147,7 +147,17 @@ def main() -> None:
     model = model.to(device)
     model.train()
 
-    model_data_cfg = resolve_model_data_config(model)
+    if scale_cfg.family == "mlp":
+        from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+        model_data_cfg = {
+            "input_size": (3, scale_cfg.image_size, scale_cfg.image_size),
+            "mean": IMAGENET_DEFAULT_MEAN,
+            "std": IMAGENET_DEFAULT_STD,
+            "interpolation": "bicubic",
+            "crop_pct": 0.875,
+        }
+    else:
+        model_data_cfg = resolve_model_data_config(model)
     train_transform = create_transform(**model_data_cfg, is_training=True)
     eval_transform = create_transform(**model_data_cfg, is_training=False)
 
@@ -156,7 +166,6 @@ def main() -> None:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         prefetch_factor=args.prefetch_factor,
-        seed=args.seed,
         train_transform=train_transform,
         eval_transform=eval_transform,
     )
