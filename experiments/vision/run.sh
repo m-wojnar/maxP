@@ -12,11 +12,11 @@ case "$SCALE" in
     debug) METHODS="maxP"; LRS="3e-3"; SEEDS="1" ;;
     vit-s) METHODS="maxP mup-full mup-no"; LRS="3e-4 1e-3 3e-3 1e-2 3e-2 1e-1 3e-1 1.0 3.0"; SEEDS="1 2 3" ;;
     vit-b) METHODS="maxP mup-full mup-no"; LRS="3e-4 1e-3 3e-3 1e-2 3e-2 1e-1 3e-1 1.0 3.0"; SEEDS="1" ;;
-    vit-l) METHODS="maxP mup-full mup-no"; LRS="${TRANSFER_LR:-1e-2}"; SEEDS="1" ;;
+    vit-l) METHODS="maxP mup-full mup-no"; LRS="3e-4 1e-3 3e-3 1e-2 3e-2 1e-1 3e-1 1.0 3.0"; SEEDS="1" ;;
     mlp-s) METHODS="maxP mup-full mup-no"; LRS="3e-4 1e-3 3e-3 1e-2 3e-2 1e-1 3e-1 1.0 3.0"; SEEDS="1 2 3" ;;
-    mlp-m) METHODS="maxP mup-full mup-no"; LRS="3e-4 1e-3 3e-3 1e-2 3e-2 1e-1 3e-1 1.0 3.0"; SEEDS="1" ;;
-    mlp-b) METHODS="maxP mup-full mup-no"; LRS="${TRANSFER_LR:-1e-2}"; SEEDS="1" ;;
-    mlp-l) METHODS="maxP mup-full mup-no"; LRS="${TRANSFER_LR:-1e-2}"; SEEDS="1" ;;
+    mlp-m) METHODS="maxP mup-full mup-no"; LRS="3e-4 1e-3 3e-3 1e-2 3e-2 1e-1 3e-1 1.0 3.0"; SEEDS="1 2 3" ;;
+    mlp-b) METHODS="maxP mup-full mup-no"; LRS="3e-4 1e-3 3e-3 1e-2 3e-2 1e-1 3e-1 1.0 3.0"; SEEDS="1 2" ;;
+    mlp-l) METHODS="maxP mup-full mup-no"; LRS="3e-4 1e-3 3e-3 1e-2 3e-2 1e-1 3e-1 1.0 3.0"; SEEDS="1" ;;
     *) echo "Unknown scale '$SCALE'. Choose from debug vit-s vit-b vit-l mlp-s mlp-m mlp-b mlp-l."; exit 1 ;;
 esac
 
