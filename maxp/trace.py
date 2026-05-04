@@ -177,7 +177,6 @@ _TRACED_OPS: dict[Any, str] = {
     torch.addmm: "addmm",
     F.linear: "linear",
     F.embedding: "embedding",
-    F.conv2d: "conv2d",
 }
 
 
