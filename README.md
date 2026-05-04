@@ -77,15 +77,6 @@ maxp/
 ├── dag.py             # DAG builder — traces PM-to-PM data flow
 ├── trace.py           # Operation tracer — records matmul-like ops
 └── diagnose.py        # Coord-check diagnostics — sweep widths, plot scaling
-
-experiments/lm/        # LLaMA-3 pre-training experiments (torchtitan)
-├── train.py           # Main training entry point (MaxPTrainer)
-├── maxp_llama3.py     # LLaMA-3 scale configs (debug, s1–s5) + compute_steps
-├── maxp_converter.py  # Post-optimizer-build hook; wires up Parametrization
-├── launch_sweep.py    # Generate and submit SLURM jobs for full LR sweep
-├── run.sh             # Submit a sweep for one scale
-├── run_debug.sh       # Quick single-GPU debug run
-└── coord_check.py     # Coord check for the parametrized LLaMA-3 model
 ```
 
 **Phase 1** (static, at init): discover PMs → reinit weights → solve LP → build param groups.
@@ -143,6 +134,11 @@ param = Parametrization(
     solve_interval=1,            # re-solve every N steps
     sample_size=32,              # max batch size for alignment measurement
     c_ema=0.0,                   # EMA smoothing for c values (0 = instant)
+    alignment_ema=0.0,           # EMA smoothing for measured alignment values
+    resample_w0=False,           # re-sample w0 snapshot each solve
+    use_training_activations=False,  # use activations from training forward pass
+    solver=None,                 # custom PuLP solver (default: CBC)
+    warm_start=False,            # warm-start LP from previous c solution
 )
 
 # Param groups for optimizer
@@ -270,8 +266,8 @@ def make_input(width):
     return torch.randint(0, vocab_size, (4, seq_len))
 
 all_ops, affected, act_stats = diagnose_axis(make_model, make_input, widths)
-print_axis(all_ops, affected, act_stats, widths)
-plot_axis(all_ops, affected, act_stats, widths, path="coord_check.png")
+print_axis("width", all_ops, affected, act_stats, widths)
+plot_axis("width", all_ops, affected, act_stats, widths, filename="coord_check.png")
 ```
 
 `print_axis` shows how the RMS of each op's output scales with width. For a correctly parametrized model, activations should be roughly **constant** (slope ≈ 0 in log-log) at init and remain stable after a few training steps.
@@ -290,6 +286,21 @@ The `experiments/lm/` directory contains a full LLaMA-3 pre-training pipeline bu
 
 Training steps are computed automatically as `20 × non-embed params / tokens-per-step`.
 
+### Files
+
+```
+experiments/lm/
+├── train.py               # Main training entry point (MaxPTrainer)
+├── maxp_llama3.py         # LLaMA-3 scale configs (debug, s1–s5) + compute_steps
+├── maxp_converter.py      # Post-optimizer-build hook; wires up Parametrization
+├── launch_sweep.py        # Generate and submit SLURM jobs for full LR sweep
+├── fineweb.py             # FineWeb-Edu dataset registration for torchtitan
+├── download_hf_assets.py  # HuggingFace asset downloader (from torchtitan)
+├── run.sh                 # Submit a sweep for one scale
+├── run_debug.sh           # Quick single-GPU debug run
+└── coord_check.py         # Coord check for the parametrized LLaMA-3 model
+```
+
 ### Debug run (single GPU)
 
 ```bash
@@ -303,6 +314,39 @@ bash experiments/lm/run_debug.sh \
 
 ```bash
 bash experiments/lm/run.sh s3   # submits 7 LRs × 3 methods × 2 seeds = 42 jobs
+```
+
+## Vision Experiments
+
+The `experiments/vision/` directory contains ViT and MLP pre-training experiments using [timm](https://github.com/huggingface/pytorch-image-models) with streaming HuggingFace datasets. It trains four ViT scales and four MLP scales with the same three methods as the LLM experiments.
+
+### Files
+
+```
+experiments/vision/
+├── train.py           # Main training entry point (single-GPU, streaming HF data)
+├── maxp_timm.py       # timm model registry + automatic ParametrizedModule wrappers
+├── hf_vision_data.py  # HF streaming train/val pipeline + transforms
+├── utils.py           # Shared helpers (LR logging, arg parsing, checkpointing)
+├── launch_sweep.py    # Generate and submit SLURM jobs for full LR sweep
+├── run.sh             # Submit a sweep for one scale
+├── run_debug.sh       # Quick tiny-model debug run (CPU/GPU)
+├── coord_check_vit.py # Coord-style diagnostic for ViT models
+└── coord_check_mlp.py # Coord-style diagnostic for MLP models
+```
+
+Available scales: `debug`, `vit-s`, `vit-b`, `vit-l`, `mlp-s`, `mlp-m`, `mlp-b`, `mlp-l`.
+
+### Debug run (CPU/GPU)
+
+```bash
+bash experiments/vision/run_debug.sh --steps 20
+```
+
+### SLURM sweep
+
+```bash
+bash experiments/vision/run.sh vit-s   # submits 9 LRs × 3 methods × 3 seeds = 81 jobs
 ```
 
 ## Running Tests

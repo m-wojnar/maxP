@@ -44,6 +44,7 @@ dev = [
     "pytest-cov>=7.0.0",
     "pyyaml>=6.0.3",
     "tiktoken>=0.7.0",
+    "timm~=1.0.26",
     "torchtitan",
     "torchvision>=0.24.1",
     "tqdm>=4.60.0",

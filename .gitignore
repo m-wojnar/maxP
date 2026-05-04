@@ -211,6 +211,9 @@ jobs
 outputs
 assets
 runs
+figs
+analysis
+wandb
 
 # Generated plots
 *.png
