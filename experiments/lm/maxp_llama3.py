@@ -129,17 +129,17 @@ def parallelize_llama(model, **kwargs):
     return _parallelize_llama(model, **kwargs)
 
 
-# Scale definitions: (dim, n_layers, n_heads, n_kv_heads[, vocab_size])
-# Approximate parameter counts (no weight tying, vocab=128256):
-#   debug: tiny 4-layer (CPU smoke tests, vocab=2048)
-#   s1:  ~21M   s2: ~81M   s3: ~218M   s4: ~1.09B   s5: ~2.71B
+# Scale definitions: width-only ladder for muP-style width scaling.
+# Non-embed parameter counts (vocab=128256):
+#   debug: tiny 4-layer (CPU smoke tests)
+#   s1: 11.4M   s2: 40.9M   s3: 163.6M   s4: 654.4M   s5: 2.62B
 SCALE_CONFIGS: dict[str, dict] = {
     "debug": dict(dim=256, n_layers=4, n_heads=4, n_kv_heads=2),
-    "s1": dict(dim=512, n_layers=6, n_heads=8, n_kv_heads=4),
-    "s2": dict(dim=768, n_layers=10, n_heads=12, n_kv_heads=4),
-    "s3": dict(dim=1024, n_layers=16, n_heads=16, n_kv_heads=4),
-    "s4": dict(dim=2048, n_layers=20, n_heads=16, n_kv_heads=4),
-    "s5": dict(dim=2560, n_layers=32, n_heads=20, n_kv_heads=4),
+    "s1": dict(dim=256, n_layers=12, n_heads=4, n_kv_heads=1),
+    "s2": dict(dim=512, n_layers=12, n_heads=8, n_kv_heads=2),
+    "s3": dict(dim=1024, n_layers=12, n_heads=16, n_kv_heads=4),
+    "s4": dict(dim=2048, n_layers=12, n_heads=32, n_kv_heads=8),
+    "s5": dict(dim=4096, n_layers=12, n_heads=64, n_kv_heads=16),
 }
 
 
@@ -151,8 +151,8 @@ def maxp_model_registry(scale: str, method: str, attn_backend: str = "sdpa") -> 
 
     Args:
         scale: One of "debug", "s1" … "s5".
-        method: "maxP" (dynamic), "mup-full" (static, full align), or
-            "mup-no" (static, no align).
+        method: "maxP" (dynamic), "mup-no" (static, no align), or
+            "maxP-meas" (static, c solved from a measured alignment table).
         attn_backend: Attention backend ("sdpa", "flex", "varlen").
     """
     if scale not in SCALE_CONFIGS:

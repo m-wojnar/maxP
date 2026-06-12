@@ -989,3 +989,52 @@ class TestAllOptimizationsCombined:
                 assert pm._w0 is None
 
         param.remove_hooks()
+
+
+class TestMeasureOnly:
+    """measure_only=True: alignment measured and stored, c/LRs never change."""
+
+    def test_lrs_and_c_frozen(self):
+        model, param, optimizer, X = _setup(measure_only=True)
+        param.capture_initial(X)
+        initial = [(g["c"], g["lr"]) for g in param.param_groups if g.get("maxp_managed")]
+
+        for _ in range(5):
+            optimizer.zero_grad()
+            model(X).sum().backward()
+            optimizer.step()
+            param.step(X, optimizer)
+
+        after = [(g["c"], g["lr"]) for g in param.param_groups if g.get("maxp_managed")]
+        assert after == initial
+
+    def test_alignment_still_measured(self):
+        model, param, optimizer, X = _setup(measure_only=True)
+        param.capture_initial(X)
+
+        for _ in range(5):
+            optimizer.zero_grad()
+            model(X).sum().backward()
+            optimizer.step()
+        param.step(X, optimizer)
+
+        # Training happened, so at least one PM should have alignment != preset
+        measured = [pm.align_z0_dW for _, pm in param._pms if pm.weight is not None]
+        assert any(not math.isclose(v, 1.0) for v in measured)
+
+    def test_pinned_layers_also_measured(self):
+        model, param, optimizer, X = _setup(
+            measure_only=True,
+            alignment_overrides={"hidden": (0.9, 0.5, 0.9)},
+        )
+        param.capture_initial(X)
+
+        for _ in range(5):
+            optimizer.zero_grad()
+            model(X).sum().backward()
+            optimizer.step()
+        param.step(X, optimizer)
+
+        # Pinned value should have been overwritten by the realized measurement
+        pm = dict(param._pms)["hidden"]
+        assert not math.isclose(pm.align_z0_dW, 0.9, abs_tol=1e-6)

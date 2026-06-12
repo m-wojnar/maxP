@@ -103,6 +103,11 @@ class Parametrization:
             Each step: ``align = ema * align_old + (1 - ema) * align_new``.
             0.0 means no smoothing (default).  Useful when alignment
             measurements are noisy (e.g. with ``use_training_activations``).
+        measure_only: If True, :meth:`step` measures alignment (including
+            for layers pinned via *alignment_overrides*) and stores it on
+            each PM for logging, but never re-solves the LP or changes
+            learning rates.  Use to passively record alignment during a
+            baseline run.
         resample_w0: If True, store a random seed per layer instead of
             cloning ``w_0``.  Regenerates ``w_0`` on-the-fly during alignment
             measurement, saving memory proportional to the total weight size.
@@ -140,6 +145,7 @@ class Parametrization:
         sample_size: int = 32,
         c_ema: float = 0.0,
         alignment_ema: float = 0.0,
+        measure_only: bool = False,
         resample_w0: bool = False,
         use_training_activations: bool = False,
         solver: "plp.LpSolver | None" = None,
@@ -217,6 +223,7 @@ class Parametrization:
         self._sample_size = sample_size
         self._c_ema = c_ema
         self._alignment_ema = alignment_ema
+        self._measure_only = measure_only
         self._resample_w0 = resample_w0
         self._warm_start = warm_start
         self._use_training_activations = use_training_activations
@@ -521,7 +528,7 @@ class Parametrization:
         from maxp.alignment import compute_alignment
 
         for name, pm in self._pms:
-            if name in self._alignment_pinned:
+            if name in self._alignment_pinned and not self._measure_only:
                 continue
             if pm._z0 is None or name not in current:
                 continue
@@ -542,6 +549,11 @@ class Parametrization:
                 pm.align_dZ_dW = a_ema * pm.align_dZ_dW + (1 - a_ema) * new_dZ_dW
             else:
                 pm.align_z0_dW, pm.align_dZ_w0, pm.align_dZ_dW = new_a0_dW, new_dZ_w0, new_dZ_dW
+
+        # Measure-only: alignment recorded on PMs for logging, LRs untouched
+        if self._measure_only:
+            self._sync_lrs(optimizer)
+            return
 
         # 3. Re-solve LP (skip c update if infeasible with current alignment)
         try:

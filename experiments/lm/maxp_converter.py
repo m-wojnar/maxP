@@ -100,13 +100,15 @@ class MaxPConverter(Configurable, ModelConverter):
 
     @dataclass(kw_only=True, slots=True)
     class Config(Configurable.Config):
-        method: str = "maxP"          # "maxP" | "mup-full" | "mup-no"
+        method: str = "maxP"          # "maxP" | "mup-no" | "maxP-meas"
         lr_prefactor: float = 1e-3
-        alignment_warmup: int = 10    # maxP only
-        solve_interval: int = 100     # maxP only
-        sample_size: int = 32         # maxP only
+        alignment_warmup: int = 10    # maxP / measure_only
+        solve_interval: int = 100     # maxP / measure_only
+        sample_size: int = 32         # maxP / measure_only
         c_ema: float = 0.0            # maxP only
         use_training_activations: bool = False  # maxP only
+        measure_only: bool = False    # measure + log alignment, never touch LRs
+        alignment_table: str | None = None  # JSON path; required for maxP-meas
 
     def __init__(
         self,
@@ -120,19 +122,33 @@ class MaxPConverter(Configurable, ModelConverter):
     def convert(self, model: nn.Module) -> None:
         install_pm_wrappers(model)
         cfg = self._cfg
+        if cfg.method not in ("maxP", "mup-no", "maxP-meas"):
+            raise ValueError(f"Unknown method '{cfg.method}'")
+
+        if cfg.measure_only and cfg.method == "maxP":
+            raise ValueError("measure_only contradicts dynamic method 'maxP'; use 'mup-no'")
+
+        alignment_overrides = None
+        if cfg.method == "maxP-meas":
+            if cfg.alignment_table is None:
+                raise ValueError("method 'maxP-meas' requires alignment_table")
+            alignment_overrides = _load_alignment_table(cfg.alignment_table)
+
         param = Parametrization(
             model,
             sample_input=_make_sample_input(model),
-            alignment="full" if "full" in cfg.method else "no",
+            alignment="no",
             lr_prefactor=cfg.lr_prefactor,
+            alignment_overrides=alignment_overrides,
             warmup_steps=cfg.alignment_warmup,
             solve_interval=cfg.solve_interval,
             sample_size=cfg.sample_size,
             c_ema=cfg.c_ema,
+            measure_only=cfg.measure_only,
             use_training_activations=cfg.use_training_activations,
         )
         model._maxp_param = param
-        if cfg.method == "maxP":
+        if cfg.method == "maxP" or cfg.measure_only:
             model._is_dynamic = True
             model._maxp_align = {
                 name: (pm.align_z0_dW, pm.align_dZ_w0, pm.align_dZ_dW)
@@ -142,6 +158,19 @@ class MaxPConverter(Configurable, ModelConverter):
 
     def post_optimizer_hook(self, model: nn.Module | list[nn.Module]) -> None:
         pass
+
+
+def _load_alignment_table(path: str) -> dict[str, tuple[float, float, float]]:
+    """Load measured alignment from JSON written by export_alignment.py.
+
+    Keys are exact PM names, leaf suffixes (e.g. "wo") or layer types;
+    values are [align_z0_dW, align_dZ_w0, align_dZ_dW].
+    """
+    import json
+
+    with open(path) as f:
+        table = json.load(f)
+    return {k: tuple(v) for k, v in table.items()}
 
 
 def _make_sample_input(model: nn.Module) -> torch.Tensor | None:

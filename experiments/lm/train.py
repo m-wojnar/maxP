@@ -27,7 +27,7 @@ from torchtitan.components.lr_scheduler import LRSchedulersContainer
 from torchtitan.components.metrics import MetricsProcessor
 from torchtitan.components.optimizer import OptimizersContainer
 from torchtitan.components.validate import Validator
-from torchtitan.config.configs import ActivationCheckpointConfig, CompileConfig, TrainingConfig
+from torchtitan.config.configs import ActivationCheckpointConfig, CompileConfig, DebugConfig, TrainingConfig
 from torchtitan.hf_datasets.text_datasets import HuggingFaceTextDataLoader
 from torchtitan.protocols.model_converter import ModelConvertersContainer
 from torchtitan.tools.logging import init_logger, logger
@@ -134,6 +134,8 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
                 solve_interval=args.solve_interval,
                 sample_size=args.sample_size,
                 c_ema=args.c_ema,
+                measure_only=args.measure_only,
+                alignment_table=args.alignment_table,
             )],
         ),
         optimizer=OptimizersContainer.Config(
@@ -171,6 +173,7 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
         ),
         compile=CompileConfig(enable=not is_debug),
         activation_checkpoint=ActivationCheckpointConfig(mode="full"),
+        debug=DebugConfig(seed=args.seed),
         validator=Validator.Config(
             enable=not is_debug,
             freq=500,
@@ -187,8 +190,12 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--scale", choices=list(SCALE_CONFIGS), default="s3",
                    help="Model scale")
-    p.add_argument("--method", choices=["maxP", "mup-full", "mup-no"], default="maxP",
+    p.add_argument("--method", choices=["maxP", "mup-no", "maxP-meas"], default="maxP",
                    help="maxP variant")
+    p.add_argument("--measure-only", action="store_true",
+                   help="Measure + log alignment without changing LRs (mup-no source runs)")
+    p.add_argument("--alignment-table", default=None,
+                   help="JSON alignment table from export_alignment.py (maxP-meas only)")
     p.add_argument("--lr", type=float, default=1e-3,
                    help="LR prefactor")
     p.add_argument("--alignment-warmup", type=int, default=100,
@@ -239,6 +246,10 @@ def main() -> None:
         raise
     else:
         trainer.close()
+        if int(os.environ.get("RANK", "0")) == 0:
+            # Sentinel for chained SLURM jobs: lets follow-up links skip
+            # without spinning up torchrun (see launch_sweep.py).
+            open(os.path.join(args.output_dir, "COMPLETED"), "w").close()
         if torch.distributed.is_initialized():
             torch.distributed.destroy_process_group()
         logger.info("Process group destroyed")
