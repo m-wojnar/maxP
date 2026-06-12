@@ -200,6 +200,10 @@ def main() -> None:
     lrs = args.lrs or ALL_LRS
     seeds = args.seeds or SCALE_SEEDS[scale]
     chain = args.chain if args.chain is not None else sc["chain"]
+    if chain > 1 and (args.measure_only or "maxP" in methods):
+        p.error("--measure-only and dynamic maxP require runs that finish in "
+                "one job (chain=1): resuming re-snapshots z0/w0 from the "
+                "checkpoint and corrupts alignment measurement")
     gpus_per_node = args.gpus_per_node if args.gpus_per_node is not None else sc["gpus"]
 
     today = date.today().strftime("%Y-%m-%d")
@@ -284,6 +288,10 @@ def main() -> None:
                         capture_output=True,
                         text=True,
                     )
+                    if result.returncode != 0:
+                        raise SystemExit(
+                            f"sbatch failed for {run_name} "
+                            f"(link {link + 1}/{chain}): {result.stderr.strip()}")
                     out = result.stdout.strip()
                     prev_job_id = out.split()[-1] if out else None
                     if args.job_ids_file and prev_job_id:
