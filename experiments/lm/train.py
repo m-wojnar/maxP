@@ -27,7 +27,7 @@ from torchtitan.components.lr_scheduler import LRSchedulersContainer
 from torchtitan.components.metrics import MetricsProcessor
 from torchtitan.components.optimizer import OptimizersContainer
 from torchtitan.components.validate import Validator
-from torchtitan.config.configs import ActivationCheckpointConfig, CompileConfig, DebugConfig, TrainingConfig
+from torchtitan.config.configs import ActivationCheckpointConfig, CommConfig, CompileConfig, DebugConfig, TrainingConfig
 from torchtitan.hf_datasets.text_datasets import HuggingFaceTextDataLoader
 from torchtitan.protocols.model_converter import ModelConvertersContainer
 from torchtitan.tools.logging import init_logger, logger
@@ -173,6 +173,7 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
         ),
         compile=CompileConfig(enable=not is_debug),
         activation_checkpoint=ActivationCheckpointConfig(mode="full"),
+        comm=CommConfig(init_timeout_seconds=600, train_timeout_seconds=1800),
         debug=DebugConfig(seed=args.seed),
         validator=Validator.Config(
             enable=not is_debug,

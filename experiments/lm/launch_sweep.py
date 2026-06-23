@@ -92,6 +92,8 @@ cd "${repo_path}"
 
 export OMP_NUM_THREADS=16
 export HF_HOME="$${HF_HOME:-/net/scratch/hscra/plgrid/plgmwojnar/hf}"
+export HF_HUB_DOWNLOAD_TIMEOUT="$${HF_HUB_DOWNLOAD_TIMEOUT:-120}"
+export HF_HUB_ETAG_TIMEOUT="$${HF_HUB_ETAG_TIMEOUT:-120}"
 export WANDB_PROJECT="$${WANDB_PROJECT:-maxP-lm}"
 export WANDB_RUN_NAME="maxp_${scale}_${method_tag}_lr${lr_tag}_s${seed}"
 
