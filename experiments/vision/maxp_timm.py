@@ -227,7 +227,6 @@ def create_model(
         "attn_layer": _ScaledAttention,
         "embed_layer": _LinearPatchEmbed,
     }
-    # Biases kept at timm ViT defaults (qkv/proj/mlp/head all biased).
     return timm.create_model(cfg.model_name, **kwargs)
 
 
