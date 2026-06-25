@@ -5,47 +5,53 @@ from __future__ import annotations
 
 import argparse
 
+import timm
 import torch
 import torch.nn.functional as F
 
 from maxp import Parametrization, diagnose_axis, plot_axis, print_axis
 
-from maxp_timm import SCALE_CONFIGS, create_model, install_pm_wrappers
+from maxp_timm import _LinearPatchEmbed, _ScaledAttention, install_pm_wrappers
 
 
-WIDTH_TO_SCALE = {
-    192: "debug",   # vit_tiny
-    384: "vit-s",   # vit_small
-    768: "vit-b",   # vit_base
-}
+IMAGE_SIZE = 224
+DEPTH = 2
+NUM_CLASSES = 1000
+
+
+def _build(width: int):
+    return timm.create_model(
+        "vit_base_patch16_224",
+        pretrained=False,
+        num_classes=NUM_CLASSES,
+        img_size=IMAGE_SIZE,
+        embed_dim=width,
+        depth=DEPTH,
+        num_heads=width // 64,
+        drop_path_rate=0.0,
+        attn_layer=_ScaledAttention,
+        embed_layer=_LinearPatchEmbed,
+    )
 
 
 def _make_model(width: int, parametrized: bool):
-    scale = WIDTH_TO_SCALE[width]
-    cfg = SCALE_CONFIGS[scale]
-    model = create_model(
-        scale=scale,
-        num_classes=1000,
-        image_size=cfg.image_size,
-    )
+    model = _build(width)
     if not parametrized:
         return model, None
     install_pm_wrappers(model)
-    sample_input = torch.randn(1, 3, cfg.image_size, cfg.image_size)
+    sample_input = torch.randn(1, 3, IMAGE_SIZE, IMAGE_SIZE)
     param = Parametrization(
         model,
         lr_prefactor=1e-3,
         optimizer_type="adam",
-        alignment="full",
+        alignment="no",
         sample_input=sample_input,
     )
     return model, param.param_groups
 
 
 def _make_input(width: int) -> torch.Tensor:
-    scale = WIDTH_TO_SCALE[width]
-    cfg = SCALE_CONFIGS[scale]
-    return torch.randn(32, 3, cfg.image_size, cfg.image_size)
+    return torch.randn(32, 3, IMAGE_SIZE, IMAGE_SIZE)
 
 
 def _make_train_step(model, param_groups):
@@ -79,7 +85,7 @@ def main() -> None:
     parser.add_argument("--plot", action="store_true")
     args = parser.parse_args()
 
-    widths = sorted(WIDTH_TO_SCALE)
+    widths = [128, 256, 512, 1024]
     variant = "parametrized" if args.parametrized else "plain"
     print(f"ViT coord check ({variant}) — widths={widths}")
 

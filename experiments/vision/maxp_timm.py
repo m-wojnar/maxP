@@ -23,32 +23,38 @@ class ScaleConfig:
     hidden: int = 0
     depth: int = 0
     dropout: float = 0.0
+    embed_dim: int = 0
+    num_heads: int = 0
 
 
+# ViT width-only ladder (mirrors the Llama3 s1..s5 ladder):
+#   width axis = embed_dim, with head_dim = 64 and depth = 12 held CONSTANT.
+#   drop_path / dropout = 0 at every scale so the only thing varying is width
+#   (regularization that scales with width would confound the muP transfer test).
 SCALE_CONFIGS: dict[str, ScaleConfig] = {
     "debug": ScaleConfig(
-        model_name="vit_tiny_patch16_224", family="vit", image_size=224, drop_path_rate=0.0
+        model_name="vit_base_patch16_224", family="vit", image_size=224,
+        embed_dim=128, num_heads=2, depth=2,
     ),
-    "vit-s": ScaleConfig(
-        model_name="vit_small_patch16_224", family="vit", image_size=224, drop_path_rate=0.1
+    "s1": ScaleConfig(
+        model_name="vit_base_patch16_224", family="vit", image_size=224,
+        embed_dim=256, num_heads=4, depth=12,
     ),
-    "vit-b": ScaleConfig(
-        model_name="vit_base_patch16_224", family="vit", image_size=224, drop_path_rate=0.2
+    "s2": ScaleConfig(
+        model_name="vit_base_patch16_224", family="vit", image_size=224,
+        embed_dim=512, num_heads=8, depth=12,
     ),
-    "vit-l": ScaleConfig(
-        model_name="vit_large_patch16_224", family="vit", image_size=224, drop_path_rate=0.4
+    "s3": ScaleConfig(
+        model_name="vit_base_patch16_224", family="vit", image_size=224,
+        embed_dim=1024, num_heads=16, depth=12,
     ),
-    "mlp-s": ScaleConfig(
-        model_name="mlp", family="mlp", image_size=224, hidden=256, depth=4, dropout=0.0
+    "s4": ScaleConfig(
+        model_name="vit_base_patch16_224", family="vit", image_size=224,
+        embed_dim=2048, num_heads=32, depth=12,
     ),
-    "mlp-m": ScaleConfig(
-        model_name="mlp", family="mlp", image_size=224, hidden=512, depth=6, dropout=0.1
-    ),
-    "mlp-b": ScaleConfig(
-        model_name="mlp", family="mlp", image_size=224, hidden=1024, depth=8, dropout=0.2
-    ),
-    "mlp-l": ScaleConfig(
-        model_name="mlp", family="mlp", image_size=224, hidden=2048, depth=8, dropout=0.3
+    "s5": ScaleConfig(
+        model_name="vit_base_patch16_224", family="vit", image_size=224,
+        embed_dim=4096, num_heads=64, depth=12,
     ),
 }
 
@@ -215,9 +221,13 @@ def create_model(
         "num_classes": num_classes,
         "drop_path_rate": cfg.drop_path_rate,
         "img_size": img_size,
+        "embed_dim": cfg.embed_dim,
+        "depth": cfg.depth,
+        "num_heads": cfg.num_heads,
         "attn_layer": _ScaledAttention,
         "embed_layer": _LinearPatchEmbed,
     }
+    # Biases kept at timm ViT defaults (qkv/proj/mlp/head all biased).
     return timm.create_model(cfg.model_name, **kwargs)
 
 

@@ -9,7 +9,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 VENV="${REPO}/.venv"
 
 SCALE="${SCALE:-debug}"
-METHOD="${METHOD:-maxP}"
+METHOD="${METHOD:-mup-no}"
 DATASET="${DATASET:-beans}"
 STEPS="${STEPS:-200}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
@@ -35,6 +35,7 @@ mkdir -p "${OUTPUT_DIR}"
 python experiments/vision/train.py \
     --scale "${SCALE}" \
     --method "${METHOD}" \
+    --measure-only \
     --dataset "${DATASET}" \
     --lr 0.03 \
     --batch-size "${BATCH_SIZE}" \

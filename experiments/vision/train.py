@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import time
 from pathlib import Path
@@ -24,7 +23,15 @@ from maxp import Parametrization
 
 from hf_vision_data import DATASET_CONFIGS, build_dataloaders
 from maxp_timm import SCALE_CONFIGS, count_trainable_params, create_model, install_pm_wrappers
-from utils import append_json, collect_alignments, collect_layer_lrs, save_checkpoint, write_json
+from utils import (
+    append_json,
+    collect_alignments,
+    collect_layer_lrs,
+    latest_checkpoint,
+    load_checkpoint,
+    save_checkpoint,
+    write_json,
+)
 
 
 def evaluate(
@@ -88,13 +95,18 @@ def current_lr_prefactor(optimizer: torch.optim.Optimizer) -> float:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scale", type=str, default="vit-s")
-    parser.add_argument("--method", choices=["maxP", "mup-full", "mup-no"], default="maxP")
+    parser.add_argument("--scale", type=str, default="s2")
+    parser.add_argument("--method", choices=["mup-no", "maxP-meas"], default="mup-no")
+    parser.add_argument("--measure-only", action="store_true", default=False,
+                        help="Measure + log alignment without changing LRs (mup-no source runs)")
+    parser.add_argument("--alignment-table", default=None,
+                        help="JSON alignment table from export_alignment.py (maxP-meas only)")
+    parser.add_argument("--c-ema", type=float, default=0.0, help="EMA smoothing for c (maxP only)")
     parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dataset", type=str, default="imagenet12k")
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--prefetch-factor", type=int, default=4)
     parser.add_argument("--max-steps", type=int, default=None)
@@ -108,9 +120,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-compile", action="store_true", default=False)
     parser.add_argument("--debug", action="store_true", default=False)
     parser.add_argument("--log-interval", type=int, default=20)
-    parser.add_argument("--checkpoint-interval", type=int, default=None)
+    parser.add_argument("--checkpoint-interval", type=int, default=1000,
+                        help="Save a checkpoint every N steps (all scales)")
+    parser.add_argument("--keep-latest-k", type=int, default=2,
+                        help="Number of recent step checkpoints to retain")
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--resume", default=None)
+    parser.add_argument("--resume", action="store_true", default=False,
+                        help="Resume from the latest checkpoint in <output-dir>/checkpoint if present")
     parser.add_argument("--output-dir", type=str, default="runs")
     return parser.parse_args()
 
@@ -129,10 +145,10 @@ def main() -> None:
     scale_cfg = SCALE_CONFIGS.get(args.scale)
     dataset_cfg = DATASET_CONFIGS.get(args.dataset)
 
+    steps_per_epoch = max(1, dataset_cfg.train_samples // args.batch_size)
     if args.max_steps is not None:
         total_steps = args.max_steps
     else:
-        steps_per_epoch = max(1, dataset_cfg.train_samples // args.batch_size)
         total_steps = steps_per_epoch * args.epochs
 
     num_classes = dataset_cfg.num_classes
@@ -161,6 +177,7 @@ def main() -> None:
     train_transform = create_transform(**model_data_cfg, is_training=True)
     eval_transform = create_transform(**model_data_cfg, is_training=False)
 
+    data_gen = torch.Generator()  # reseeded per pass so the shuffle order is reproducible
     train_loader, val_loader, _ = build_dataloaders(
         dataset_name=args.dataset,
         batch_size=args.batch_size,
@@ -168,11 +185,19 @@ def main() -> None:
         prefetch_factor=args.prefetch_factor,
         train_transform=train_transform,
         eval_transform=eval_transform,
+        generator=data_gen,
     )
 
     sample_input = torch.randn(1, 3, scale_cfg.image_size, scale_cfg.image_size, device=device)
-    alignment_mode = "full" if "full" in args.method else "no"
-    dynamic = args.method == "maxP"
+    alignment_mode = "no"
+    dynamic = args.measure_only
+
+    alignment_overrides = None
+    if args.method == "maxP-meas":
+        if args.alignment_table is None:
+            raise ValueError("method 'maxP-meas' requires --alignment-table")
+        with open(args.alignment_table) as f:
+            alignment_overrides = {k: tuple(v) for k, v in json.load(f).items()}
 
     param = Parametrization(
         model,
@@ -180,9 +205,12 @@ def main() -> None:
         alignment=alignment_mode,
         lr_prefactor=args.lr,
         sample_input=sample_input,
+        alignment_overrides=alignment_overrides,
         warmup_steps=args.alignment_warmup,
         solve_interval=args.solve_interval,
         sample_size=args.sample_size,
+        c_ema=args.c_ema,
+        measure_only=args.measure_only,
     )
     
     optimizer = torch.optim.AdamW(
@@ -240,12 +268,29 @@ def main() -> None:
     global_step = start_epoch = total_seen = 0
     align_sample: torch.Tensor | None = None
 
+    if args.resume:
+        ckpt_path = latest_checkpoint(output_dir / "checkpoint")
+        if ckpt_path is not None:
+            progress = load_checkpoint(ckpt_path, model=model, optimizer=optimizer, device=device)
+            global_step = progress["step"]
+            start_epoch = progress["epoch"]
+            total_seen = progress["samples_seen"]
+            print(f"[resume] loaded {ckpt_path} — step={global_step} epoch={start_epoch}")
+        else:
+            print(f"[resume] no checkpoint under {output_dir/'checkpoint'} — starting fresh")
+
+    step_budget = total_steps
+
     t0 = time.time()
     last_log_time = t0
     last_log_seen = total_seen
     stop_training = False
 
-    for epoch in range(start_epoch, args.epochs):
+    pass_idx = start_epoch
+    while not stop_training:
+        # Reseed the shuffle each pass → reproducible, deterministic order.
+        data_gen.manual_seed(args.seed * 1_000_000 + pass_idx)
+        epoch = pass_idx
         for xb, yb in train_loader:
             xb = xb.to(device, non_blocking=True)
             yb = yb.to(device, non_blocking=True)
@@ -333,14 +378,14 @@ def main() -> None:
                     epoch=epoch,
                     samples_seen=total_seen,
                     args=args,
+                    keep_latest_k=args.keep_latest_k,
                 )
 
-            if args.max_steps is not None and global_step >= args.max_steps:
+            if global_step >= step_budget:
                 stop_training = True
                 break
 
-        if stop_training:
-            break
+        pass_idx += 1
 
     eval_metrics = evaluate(
         model=model,
