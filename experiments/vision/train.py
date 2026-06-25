@@ -417,6 +417,9 @@ def main() -> None:
     )
 
     print(f"\nDone. Total training time: {elapsed:.1f} seconds.")
+    if torch.cuda.is_available():
+        print(f"Peak CUDA mem: {torch.cuda.max_memory_allocated() / 1e9:.1f} GB / "
+              f"{torch.cuda.get_device_properties(device).total_memory / 1e9:.0f} GB")
     print(json.dumps(eval_metrics, indent=2, sort_keys=True))
 
 
