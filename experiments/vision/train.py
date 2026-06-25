@@ -33,6 +33,10 @@ from utils import (
     write_json,
 )
 
+# Device peak dense throughput for the MFU estimate (GH200 bf16 ≈ 989 TFLOP/s).
+# Override via env for a different GPU/dtype, or MFU is off by the mis-spec ratio.
+DEVICE_PEAK_FLOPS = float(os.getenv("DEVICE_PEAK_FLOPS", 989e12))
+
 
 def evaluate(
     *,
@@ -248,9 +252,14 @@ def main() -> None:
         log_dir.mkdir(parents=True, exist_ok=True)
         tb_writer = SummaryWriter(log_dir=str(log_dir))
     
+    # For the 6ND MFU estimate: N = trainable params, D = tokens/sample.
+    # ViT tokens = (img/patch)^2 patches + 1 CLS (patch16 across all configs).
+    n_params = count_trainable_params(model)
+    tokens_per_sample = (scale_cfg.image_size // 16) ** 2 + 1
+
     print("\n=== maxP vision run ===")
     print(f"  scale:            {args.scale} ({scale_cfg.model_name})")
-    print(f"  params:           {count_trainable_params(model)}")
+    print(f"  params:           {n_params}")
     print(f"  method:           {args.method}")
     print(f"  dataset:          {args.dataset}")
     print(f"  train_samples:    {dataset_cfg.train_samples}")
@@ -345,6 +354,7 @@ def main() -> None:
                     "perf/samples_seen": total_seen,
                     "perf/samples_per_sec": total_seen / elapsed,
                     "perf/samples_per_sec_interval": interval_sps,
+                    "perf/mfu": 6 * n_params * tokens_per_sample * interval_sps / DEVICE_PEAK_FLOPS,
                     "lr/lr_prefactor": current_lr_prefactor(optimizer),
                     **collect_layer_lrs(param),
                     **eval_metrics,
