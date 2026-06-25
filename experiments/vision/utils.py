@@ -105,7 +105,10 @@ def load_checkpoint(
     if ckpt.get("rng") is not None:
         torch.set_rng_state(ckpt["rng"].cpu() if hasattr(ckpt["rng"], "cpu") else ckpt["rng"])
     if ckpt.get("cuda_rng") is not None and torch.cuda.is_available():
-        torch.cuda.set_rng_state_all(ckpt["cuda_rng"])
+        # map_location may have moved these onto the GPU; set_rng_state_all needs
+        # CPU ByteTensors.
+        cuda_rng = [s.cpu() if hasattr(s, "cpu") else s for s in ckpt["cuda_rng"]]
+        torch.cuda.set_rng_state_all(cuda_rng)
     return {
         "step": int(ckpt["step"]),
         "epoch": int(ckpt["epoch"]),
