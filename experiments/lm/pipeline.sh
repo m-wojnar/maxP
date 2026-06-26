@@ -46,6 +46,7 @@ GATE_TOL="${GATE_TOL:-0.02}"
 ACCOUNT="${ACCOUNT:-plgadlers-gpu-gh200}"
 PARTITION="${PARTITION:-plgrid-gpu-gh200}"
 DRY="${DRY:-0}"
+RUN_DATE="${RUN_DATE:-}"
 
 # Candidate LR grid for s3/s4/s5 (must match launch_sweep ALL_LRS; tags in
 # launch_sweep's printf %.0e format so sentinel and run names line up).
@@ -59,10 +60,15 @@ cd "$REPO"
 mkdir -p "$STATE"
 log() { echo "[pipeline] $*"; }
 
+# Login node has no python by default; load a stdlib interpreter for launch_sweep.py.
+command -v python >/dev/null 2>&1 || module add GCCcore/13.2.0 Python/3.11.5
+
 LAUNCH=(python experiments/lm/launch_sweep.py
         --runs-dir "$RUNS_DIR" --hf-assets-path "$HF_ASSETS"
         --venv-path "$VENV" --repo-path "$REPO" --dataset "$DATASET")
 [ "$DRY" = "1" ] && LAUNCH+=(--dry-run)
+# Pin run-date prefix so a resubmit reuses existing run dirs (skip done / resume chains).
+[ -n "$RUN_DATE" ] && LAUNCH+=(--run-date "$RUN_DATE")
 
 submit() {  # submit a standalone job script, echo job id
     if [ "$DRY" = "1" ]; then echo "DRY"; log "[dry] sbatch $1" >&2; return; fi

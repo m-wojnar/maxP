@@ -192,6 +192,10 @@ def main() -> None:
                    help="Print sbatch commands without submitting")
     p.add_argument("--resume", action="store_true",
                    help="Submit all runs even if a checkpoint exists (resume interrupted training)")
+    p.add_argument("--run-date", default=None,
+                   help="Override the YYYY-MM-DD prefix in run names (default: "
+                        "today). Use to resubmit into an existing run's dir so "
+                        "training resumes from its checkpoint.")
     args = p.parse_args()
 
     scale = args.scale
@@ -208,7 +212,7 @@ def main() -> None:
                 "checkpoint and corrupts alignment measurement")
     gpus_per_node = args.gpus_per_node if args.gpus_per_node is not None else sc["gpus"]
 
-    today = date.today().strftime("%Y-%m-%d")
+    today = args.run_date or date.today().strftime("%Y-%m-%d")
     submitted = skipped = 0
 
     for method in methods:

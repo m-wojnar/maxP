@@ -164,6 +164,10 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--resume", action="store_true",
                         help="Force resubmit even if final_metrics.json already exists")
+    parser.add_argument("--run-date", default=None,
+                        help="Override the YYYY-MM-DD prefix in run names (default: "
+                             "today). Use to resubmit into an existing run's dir so "
+                             "training resumes from its checkpoint.")
     args = parser.parse_args()
 
     sc = SCALE_CONFIGS[args.scale]
@@ -179,7 +183,7 @@ def main():
         raise SystemExit("--measure-only requires chain==1: resume re-snapshots z0/w0 and "
                          "corrupts alignment measurement (use full-budget single jobs to measure)")
     
-    today = date.today().strftime("%Y-%m-%d")
+    today = args.run_date or date.today().strftime("%Y-%m-%d")
     submitted = skipped = 0
 
     for method in methods:

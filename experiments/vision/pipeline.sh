@@ -40,6 +40,7 @@ GATE_TOL="${GATE_TOL:-0.02}"
 ACCOUNT="${ACCOUNT:-plgadlers-gpu-gh200}"
 PARTITION="${PARTITION:-plgrid-gpu-gh200}"
 DRY="${DRY:-0}"
+RUN_DATE="${RUN_DATE:-}"
 
 # Candidate LR grid (tags must match launch_sweep ALL_LRS in %.0e form).
 GRID_LRS="${GRID_LRS:-3e-04 1e-03 3e-03 1e-02 3e-02 1e-01 3e-01}"
@@ -48,10 +49,15 @@ cd "$REPO"
 mkdir -p "$STATE"
 log() { echo "[vpipeline] $*"; }
 
+# Login node has no python by default; load a stdlib interpreter for launch_sweep.py.
+command -v python >/dev/null 2>&1 || module add GCCcore/13.2.0 Python/3.11.5
+
 LAUNCH=(python experiments/vision/launch_sweep.py
         --runs-dir "$RUNS_DIR" --venv-path "$VENV" --repo-path "$REPO"
         --dataset "$DATASET" --epochs "$EPOCHS" --batch-size "$BATCH")
 [ "$DRY" = "1" ] && LAUNCH+=(--dry-run)
+# Pin run-date prefix so a resubmit reuses existing run dirs (skip done / resume chains).
+[ -n "$RUN_DATE" ] && LAUNCH+=(--run-date "$RUN_DATE")
 
 submit() {  # submit a standalone coordinator script, echo job id
     if [ "$DRY" = "1" ]; then echo "DRY"; log "[dry] sbatch $1" >&2; return; fi
