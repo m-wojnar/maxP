@@ -571,7 +571,7 @@ p5b = Parametrization(m5b, lr_prefactor=0.01, alignment="full")
 m5b.h0.align_z0_dW, m5b.h0.align_dZ_w0, m5b.h0.align_dZ_dW = 0.8, 0.3, 0.6
 m5b.h1.align_z0_dW, m5b.h1.align_dZ_w0, m5b.h1.align_dZ_dW = 1.0, 0.5, 1.0  # full
 m5b.h2.align_z0_dW, m5b.h2.align_dZ_w0, m5b.h2.align_dZ_dW = 0.5, 0.2, 0.3
-c_by_name = p5b._resolve_chain()
+c_by_name = p5b._resolve()
 print(f"  Per-PM c values: {c_by_name}")
 assert_check(
     "hidden layers have different c",

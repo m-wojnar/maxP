@@ -660,7 +660,7 @@ model definitions and training scripts.
 | `mlp.py` | Vanilla MLP (no parametrization, baseline) |
 | `parametrized_mlp.py` | MLP with `ParametrizedModule` wrappers |
 | `train.py` | LR transfer demo: SP vs muP across widths |
-| `mup_vs_maxp.py` | Conservative vs muP static alignment comparison |
+| `mup_vs_conservative.py` | Conservative vs muP static alignment comparison |
 
 ### `vit_example/` — ViT baselines
 
@@ -718,22 +718,11 @@ python -m pytest tests/ -v --tb=short
 
 | File | Tests | What it covers |
 |------|-------|---------------|
-| `test_dag.py` | 23 | DAG tracing, DAG solver, Parametrization+DAG integration |
-| `test_dag_solver_properties.py` | 18 | Analytical correctness, optimality, per-op differentiation |
-| `test_alignment_new.py` | 11 | `compute_alignment()` edge cases and properties |
-| `test_step.py` | 11 | `capture_initial()`, `step()`, warmup, interval, optimizer sync |
-
-### Legacy tests (old maxp package)
-
-| File | Tests | What it covers |
-|------|-------|---------------|
-| `test_parametrization.py` | 14+ | `get_abc_parametrization`, `create_param_groups` |
-| `test_scheduler.py` | 20+ | `MaxPScheduler`, WSD warmup/decay |
-| `test_init_weights.py` | — | `ScaledLinear`, `initialize_abc_weights` |
-| `test_smoke.py` | — | End-to-end smoke tests |
-| `test_solver.py` | 2 | Old `find_c_adam`, `find_c_sgd` |
-| `test_tracer.py` | 3 | Old `Tracer` class |
-| `test_alignment.py` | 3 | Old alignment computation |
+| `test_dag.py` | 22 | DAG tracing, DAG solver, Parametrization+DAG integration |
+| `test_dag_solver_properties.py` | 19 | Analytical correctness, optimality, per-op differentiation |
+| `test_step.py` | 47 | `capture_initial()`, `step()`, warmup, interval, optimizer sync |
+| `test_alignment.py` | 5 | `compute_alignment()` edge cases and properties |
+| `test_optimizations_integration.py` | 10 | End-to-end optimization integration |
 
 ---
 

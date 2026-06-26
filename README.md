@@ -1,13 +1,15 @@
 # maxP
 
-**maxP** is a PyTorch library for neural network parametrization implementing the abc-parametrization framework from [Everett et al., 2024](https://arxiv.org/abs/2407.05872) with dynamic alignment measurement from [this blog post](https://iejmac.github.io/2025/03/26/alignments.html).
+**maxP** is a PyTorch library for width-robust neural network parametrization. It implements the abc-parametrization framework from [Everett et al., 2024](https://arxiv.org/abs/2407.05872) and extends it with measured alignment from [this blog post](https://iejmac.github.io/2025/03/26/alignments.html).
+
+> **Tune the learning rate once at a small width — reuse it at billions of parameters.** Wrap your width-sensitive layers, and maxP sets each layer's init, output scale, and LR so the optimal LR *transfers across width*. With one passive alignment measurement, it then beats µP by ~0.1 nat at every scale from 77M to 3.7B params — see [`docs/width_ladder_results.md`](docs/width_ladder_results.md).
 
 Each layer `l` has three exponents controlling its width-scaling behavior:
 - **`a_l`**: Output multiplier — layer output is scaled by `n^{-a_l}`
 - **`b_l`**: Init variance — weights initialized as `N(0, n^{-2b_l})`
 - **`c_l`**: Learning rate — `lr_l = lr_prefactor * n^{-c_l}`
 
-The library solves a Linear Program (LP) to find optimal `c_l` values that maximize per-layer learning rates while maintaining numerical stability. Optionally, it measures actual alignment between initial and current weights/activations during training and re-solves the LP dynamically.
+The library solves a Linear Program (LP) to find optimal `c_l` values that maximize per-layer learning rates while maintaining numerical stability. Alignment can be measured rather than assumed worst-case. The validated recipe takes a single passive alignment measurement at a small scale, freezes it into a per-layer `c` table, and applies that table unchanged across the width ladder. Online per-step re-solving is also supported but is exploratory.
 
 ## Installation
 
@@ -47,24 +49,20 @@ class MLP(nn.Module):
 
 model = MLP(width=256)
 
-# 2. Apply parametrization (re-inits weights, solves LP, builds param groups)
+# 2. Solve per-layer LRs + re-init weights, then build optimizer param groups.
+#    alignment="full" is µP. The lr_prefactor you tune here transfers across width.
 param = Parametrization(model, lr_prefactor=1e-3, alignment="full")
-
-# 3. Create optimizer from param_groups (each layer gets its own LR)
 optimizer = torch.optim.AdamW(param.param_groups)
 
-# 4. Capture initial state BEFORE training (needed for dynamic alignment)
-X_init = next(iter(train_loader))[0]
-param.capture_initial(X_init)
-
-# 5. Training loop
+# 3. Train normally — nothing maxP-specific in the loop.
 for X, y in train_loader:
     optimizer.zero_grad()
     loss = criterion(model(X), y)
     loss.backward()
     optimizer.step()
-    param.step(X, optimizer)  # measure alignment, re-solve LP, update LRs
 ```
+
+That's µP, done in two lines. The `lr_prefactor` tuned at width 256 stays optimal at width 8192 — no retuning. To beat µP, measure alignment once and freeze it into a per-layer `c` table via `alignment_overrides` — see [Dynamic Alignment](#dynamic-alignment-phase-2) for measurement and [`docs/width_ladder_results.md`](docs/width_ladder_results.md) for results.
 
 ## Design Overview
 
@@ -276,77 +274,77 @@ If an activation grows with width, `a` is too small for that layer — increase 
 
 ## LLM Experiments
 
-The `experiments/lm/` directory contains a full LLaMA-3 pre-training pipeline built on [torchtitan](https://github.com/pytorch/torchtitan). It trains five scales (30M–3B parameters) with three methods:
+The `experiments/lm/` directory contains a full LLaMA-3 pre-training pipeline built on [torchtitan](https://github.com/pytorch/torchtitan). It runs a width-only ladder (depth 12, FineWeb-Edu train / c4 val), comparing two arms:
 
-| Method | Parametrization | Alignment | Schedule |
-|---|---|---|---|
-| `maxP` | µP + measured | online (dynamic re-solve) | emergent |
-| `mup-full` | µP | full (worst-case preset) | constant |
-| `mup-no` | µP | none (permissive preset) | constant |
+| Method | Parametrization | Alignment |
+|---|---|---|
+| `mup-no` | µP | none (permissive preset) — baseline |
+| `maxP-meas` | µP + measured | static `c`-table from one passive measurement at s2, applied unchanged across scales |
 
-Training steps are computed automatically as `20 × non-embed params / tokens-per-step`.
+| scale | s1 | s2 | s3 | s4 | s5 |
+|---|---|---|---|---|---|
+| **embed_dim** | 256 | 512 | 1024 | 2048 | 4096 |
+| **total params** | 77M | 172M | 426M | 1.18B | 3.67B |
+
+Training steps are computed automatically as `20 × non-embed params / tokens-per-step`. Results and analysis: `docs/width_ladder_results.md`.
 
 ### Files
 
 ```
 experiments/lm/
-├── train.py               # Main training entry point (MaxPTrainer)
+├── train.py               # Training entry point (MaxPTrainer)
 ├── maxp_llama3.py         # LLaMA-3 scale configs (debug, s1–s5) + compute_steps
 ├── maxp_converter.py      # Post-optimizer-build hook; wires up Parametrization
-├── launch_sweep.py        # Generate and submit SLURM jobs for full LR sweep
+├── launch_sweep.py        # Generate/submit SLURM jobs for one LR sweep
+├── pipeline.sh            # Full submit-only DAG: measure → export → transfer → verify
+├── export_alignment.py    # Build the static c-table from a measured run
+├── pipeline_analyze.py    # Pick best LR, gate checks, transfer/E1 verdicts
 ├── fineweb.py             # FineWeb-Edu dataset registration for torchtitan
 ├── download_hf_assets.py  # HuggingFace asset downloader (from torchtitan)
-├── run.sh                 # Submit a sweep for one scale
-├── run_debug.sh           # Quick single-GPU debug run
+├── run.sh / run_debug.sh  # Single-scale sweep / quick debug run
 └── coord_check.py         # Coord check for the parametrized LLaMA-3 model
 ```
 
-### Debug run (single GPU)
+### Run
 
 ```bash
-bash experiments/lm/run_debug.sh \
-    --tokenizer /path/to/tokenizer \
-    --c4-test /path/to/c4_test \
-    --steps 200 --method maxP
-```
-
-### SLURM sweep
-
-```bash
-bash experiments/lm/run.sh s3   # submits 7 LRs × 3 methods × 2 seeds = 42 jobs
+bash experiments/lm/run_debug.sh --tokenizer /path/to/tokenizer \
+    --c4-test /path/to/c4_test --steps 200 --method mup-no   # single-GPU smoke
+bash experiments/lm/pipeline.sh                              # full ladder DAG (server)
 ```
 
 ## Vision Experiments
 
-The `experiments/vision/` directory contains ViT and MLP pre-training experiments using [timm](https://github.com/huggingface/pytorch-image-models) with streaming HuggingFace datasets. It trains four ViT scales and four MLP scales with the same three methods as the LLM experiments.
+The `experiments/vision/` directory mirrors the LM protocol for ViT on [timm](https://github.com/huggingface/pytorch-image-models) with ImageNet-12k. It runs a width-only ladder (depth 12, head_dim 64, embed 256→4096 held otherwise fixed) with the same two arms as LM (`mup-no` baseline, `maxP-meas`).
+
+| scale | s1 | s2 | s3 | s4 | s5 |
+|---|---|---|---|---|---|
+| **embed_dim** | 256 | 512 | 1024 | 2048 | 4096 |
+| **total params** | 12.8M | 44.4M | 164M | 630M | 2.47B |
 
 ### Files
 
 ```
 experiments/vision/
-├── train.py           # Main training entry point (single-GPU, streaming HF data)
-├── maxp_timm.py       # timm model registry + automatic ParametrizedModule wrappers
-├── hf_vision_data.py  # HF streaming train/val pipeline + transforms
-├── utils.py           # Shared helpers (LR logging, arg parsing, checkpointing)
-├── launch_sweep.py    # Generate and submit SLURM jobs for full LR sweep
-├── run.sh             # Submit a sweep for one scale
-├── run_debug.sh       # Quick tiny-model debug run (CPU/GPU)
-├── coord_check_vit.py # Coord-style diagnostic for ViT models
-└── coord_check_mlp.py # Coord-style diagnostic for MLP models
+├── train.py            # Training entry point (single-GPU, map-style HF data)
+├── maxp_timm.py        # timm ViT registry (s1–s5) + automatic ParametrizedModule wrappers
+├── hf_vision_data.py   # Non-streaming HF train/val pipeline + transforms
+├── utils.py            # Shared helpers (LR logging, checkpointing, RNG)
+├── launch_sweep.py     # Generate/submit SLURM jobs for one LR sweep
+├── pipeline.sh         # Full submit-only DAG: measure → export → transfer → verify
+├── export_alignment.py # Build the static c-table from a measured run
+├── pipeline_analyze.py # Pick best LR, gate checks, transfer/E1 verdicts
+├── run.sh / run_debug.sh  # Single-scale sweep / quick tiny-model debug run
+└── coord_check_vit.py / coord_check_mlp.py  # Coord-check diagnostics
 ```
 
-Available scales: `debug`, `vit-s`, `vit-b`, `vit-l`, `mlp-s`, `mlp-m`, `mlp-b`, `mlp-l`.
+Scales: `debug`, `s1`–`s5` (ViT only).
 
-### Debug run (CPU/GPU)
-
-```bash
-bash experiments/vision/run_debug.sh --steps 20
-```
-
-### SLURM sweep
+### Run
 
 ```bash
-bash experiments/vision/run.sh vit-s   # submits 9 LRs × 3 methods × 3 seeds = 81 jobs
+bash experiments/vision/run_debug.sh --steps 20   # tiny-model smoke (CPU/GPU)
+bash experiments/vision/pipeline.sh               # full ladder DAG (server)
 ```
 
 ## Running Tests

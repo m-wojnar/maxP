@@ -101,25 +101,11 @@ r_{L-1} >= 0
 
 ---
 
-## paramR vs maxP Comparison
+## Implementation status
 
-paramR is the research prototype; maxP is the library extraction.
+The theory above is current; the refactor it motivated is done. maxP now wraps arbitrary
+layers via `ParametrizedModule`, classifies/solves over a traced op-DAG (`dag.py`/`trace.py`),
+and applies the result through a single `Parametrization` entry point — no separate scheduler
+class. For the per-module code map, see `walkthrough.md`; for layer-classification rules, see
+`parametrization_policy.md`.
 
-Key differences relevant to the refactor:
-- paramR: tightly coupled to MLP model class, closure-based scheduler
-- maxP: model-agnostic via nn.Linear scanning, proper scheduler class
-- Both use identical LP formulation
-- maxP added: WSD support, ChainedMaxPScheduler, checkpointing, two alignment norm modes
-- paramR has a metric registry system that maxP dropped
-- paramR's alignment uses ratio-style; maxP defaults to log-scale (configurable)
-
----
-
-## What Needs to Change
-
-1. **Solver generalization**: Currently hardcoded to embed/hidden/readout structure.
-   Need to support arbitrary layer topologies.
-2. **API simplification**: Three-step setup (init weights, create param groups, create scheduler)
-   is error-prone. Should be a single entry point.
-3. **Architecture support**: Need to map LP semantics onto transformers, convnets, etc.
-4. **Tests**: Need tests that verify against known parametrization results, not just API smoke tests.

@@ -61,6 +61,39 @@ Seeds: s1/s2 ×3, s3/s4 ×2, s5 ×1.
 
 4. **Mechanism still open — not adjudicated by this data.** No run varies readout LR independently of global LR. The maxP-meas c-table is readout-dominated (output Δc ≈ +0.228 vs muP; all other layers within ±0.04). Width-consistency is *consistent with* width-correct per-layer scaling, but a flat-enough constant readout-LR cut could also hold ~0.1 nat. The clean falsification arm (**mup-no + tuned readout LR**, 2D sweep) was not run. Claim the ~0.1 nat as real and width-stable; leave the *mechanism* (width-correct per-layer scaling vs a constant readout cut) unproven.
 
+## Is the preserved LR optimum (mup-no ↔ maxP-meas) a guarantee or luck?
+
+Both arms share the **same** prefactor optimum at the tuning scales — `mup-no s1=s2=3e-2`, `maxP-meas s1=s2=3e-2` (pipeline `report.txt`, `[consistent]`), and it `[TRANSFERS]` to s3. So switching mup-no → maxP-meas re-scales per-layer LRs but does **not** move the global-LR argmin. Is that guaranteed? **Neither a free theorem nor luck — a conditional structural result, and the condition is empirically met here.**
+
+**Reduction.** At fixed tuning width `n`, the c-table only changes the width-*exponent*, so it multiplies each layer's LR by a **constant** `k_l = n^(−Δc_l)`. The question is purely: rescale per-layer LRs `{η·m_l} → {η·m_l·k_l}`, does the optimal global `η*` stay put?
+
+**In general — no guarantee.** Rescaling *relative* per-layer LRs deforms the loss-vs-η landscape; `η*` can move. No theorem makes it invariant under arbitrary per-layer rescaling.
+
+**Why it held here — two semi-principled facts:**
+
+1. **The correction is readout-dominated** — `Δc_readout ≈ +0.228`, every other layer within `±0.04` → `k_l ≈ 1` except the readout. Predicted, not accidental: muP's `α=0.5` alignment assumption is approximately right for the **bulk hidden layers** (muP's basis) and wrong mainly at the **boundary** (readout), so measured corrections concentrate there.
+2. **Readout LR is weakly coupled to `η*`** — the usable-LR window (hence the argmin) is set by the hidden stack's feature-learning dynamics; the readout is one top linear layer, and its c is solver-**pinned** by the output-stability constraint. Rescaling it lowers the loss **floor** but barely moves the **location** of the optimum.
+
+**Deeper near-principle.** Both arms are maximal-update-class parametrizations. The optimal global LR is an intrinsic property of the optimization problem (arch + optimizer + data) that muP factors the width-scaling out of; two *correct* MUP-family parametrizations target the same joint-"all-layers-maximal" `η`, differing only in **how** correct they are → they differ in the **loss floor**, not the **argmin**. The residual gap between them *is* mup-no's alignment error — small and concentrated → small `η*` shift.
+
+**Evidence the optimum is decisive (not a coarse-grid near-tie).** Per-LR loss at s2 (`.out`, seed s1):
+
+| LR | mup-no | maxP-meas |
+|----|--------|-----------|
+| 1e-2 | 3.988 | 4.040 |
+| **3e-2** | **3.786** | **3.675** |
+| 1e-1 | 3.945 | 3.740 |
+
+3e-2 wins by ~0.1–0.2 nat over both neighbours in **both** arms — well above seed noise.
+
+**Where it breaks (paper-honest boundary):**
+
+- If a regime makes muP's alignment assumption badly wrong across **many bulk layers** (large Δc spread through depth, not just readout), `η*` **will** move → re-tuning is mandatory.
+- "Preserved" is only **within one grid step** (×3 spacing); a sub-3× drift is real-but-invisible.
+- Assumes both stay in the stable feature-learning class.
+
+**Implication.** The small-scale maxP-meas re-tune (Stage C) is **not ceremony** — it is the *test* that the readout-concentrated + decoupled precondition holds. It is **not** a priori safe to skip for a new arch/dataset (e.g. **vision** — its c-table may not be readout-dominated; verify before trusting a single tune). Correct claim for the paper: *"the LR optimum is preserved because the measured correction is readout-concentrated and the readout LR is decoupled from the global optimum"* — **not** *"maxP-meas preserves the LR optimum"* unconditionally.
+
 ## Caveats
 
 - **OOD validation**: val = c4, train = fineweb-edu. Fair across arms (identical), but val is not in-distribution. Train margin runs ~0.03–0.05 larger than val at small scale (maxP-meas fits train harder; part doesn't transfer to c4) — expected.
