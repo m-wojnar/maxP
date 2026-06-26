@@ -81,7 +81,7 @@ if [ -f "${output_dir}/final_metrics.json" ]; then
     exit 0
 fi
 ${runtime_guards}
-export OMP_NUM_THREADS=32
+export OMP_NUM_THREADS=1
 export HF_HOME="$${HF_HOME:-/net/scratch/hscra/plgrid/plgmwojnar/hf}"
 export HF_HUB_DOWNLOAD_TIMEOUT="$${HF_HUB_DOWNLOAD_TIMEOUT:-120}"
 export HF_HUB_ETAG_TIMEOUT="$${HF_HUB_ETAG_TIMEOUT:-120}"
@@ -137,7 +137,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=4,
                         help="Epochs — identical at every width (fixed sample budget, muTransfer setup)")
     parser.add_argument("--batch-size", type=int, default=512)
-    parser.add_argument("--num-workers", type=int, default=16)
+    parser.add_argument("--num-workers", type=int, default=64)
     parser.add_argument("--val-interval", type=int, default=500,
                         help="Run validation every N steps (must be a multiple of --log-interval=20)")
     parser.add_argument("--val-steps", type=int, default=50,

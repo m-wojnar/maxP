@@ -161,7 +161,7 @@ def main() -> None:
         num_classes=num_classes,
         image_size=scale_cfg.image_size,
     )
-    model.set_grad_checkpointing(enable=True)
+    model.set_grad_checkpointing(enable=args.scale in ("s4", "s5"))
     
     install_pm_wrappers(model)
     model = model.to(device)

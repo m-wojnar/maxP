@@ -62,7 +62,7 @@ class HFVisionDataset(Dataset):
         sample = self._hf[idx]
         image = sample[self._preset.image_key].convert("RGB")
         label = sample[self._preset.label_key]
-        x = self._transform(image)
+        x = self._transform(image).to(torch.bfloat16)
         y = torch.tensor(label, dtype=torch.long)
         return x, y
 
