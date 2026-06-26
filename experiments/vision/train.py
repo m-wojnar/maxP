@@ -305,7 +305,7 @@ def main() -> None:
             yb = yb.to(device, non_blocking=True)
 
             if dynamic and align_sample is None:
-                align_sample = xb[:args.sample_size].detach().clone().to(device)
+                align_sample = xb[:args.sample_size].detach().clone().float().to(device)
                 param.capture_initial(align_sample)
 
             optimizer.zero_grad()
