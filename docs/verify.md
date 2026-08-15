@@ -398,7 +398,7 @@ sanitizes the computation to avoid division by zero. This is tested with
 
 ## 10. Dynamic Alignment — capture\_initial + step
 
-**What we're testing:** The full Phase 2 flow:
+**What we're testing:** The full dynamic-alignment flow:
 1. `capture_initial(X)` stores `_z0` and `_w0` on each PM
 2. During warmup, `step()` does nothing
 3. After warmup, `step()` measures alignment, re-solves LP, updates LRs

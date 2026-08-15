@@ -7,8 +7,8 @@ Trains two variants of the same ParametrizedMLP architecture:
   2. muP — static "full" alignment (alpha=1, omega=0.5, u=1).
 
 Usage:
-    python examples/mlp_example/mup_vs_maxp.py
-    python examples/mlp_example/mup_vs_maxp.py --width 256 --steps 1000
+    python examples/mlp_example/mup_vs_conservative.py
+    python examples/mlp_example/mup_vs_conservative.py --width 256 --steps 1000
 """
 
 import argparse
@@ -91,7 +91,7 @@ def smooth(values, window=20):
     return np.convolve(values, kernel, mode="valid").tolist()
 
 
-def plot_results(cons_losses, mup_losses, filename="mup_vs_maxp.png", window=20):
+def plot_results(cons_losses, mup_losses, filename="mup_vs_conservative.png", window=20):
     import matplotlib.pyplot as plt
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 5))
@@ -135,7 +135,7 @@ def main():
     parser.add_argument("--lr-prefactor", type=float, default=0.01)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-plot", action="store_true")
-    parser.add_argument("--output", type=str, default="mup_vs_maxp.png")
+    parser.add_argument("--output", type=str, default="mup_vs_conservative.png")
     args = parser.parse_args()
 
     device = get_device()

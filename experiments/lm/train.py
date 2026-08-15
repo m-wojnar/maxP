@@ -27,7 +27,7 @@ from torchtitan.components.lr_scheduler import LRSchedulersContainer
 from torchtitan.components.metrics import MetricsProcessor
 from torchtitan.components.optimizer import OptimizersContainer
 from torchtitan.components.validate import Validator
-from torchtitan.config.configs import ActivationCheckpointConfig, CompileConfig, TrainingConfig
+from torchtitan.config.configs import ActivationCheckpointConfig, CommConfig, CompileConfig, DebugConfig, TrainingConfig
 from torchtitan.hf_datasets.text_datasets import HuggingFaceTextDataLoader
 from torchtitan.protocols.model_converter import ModelConvertersContainer
 from torchtitan.tools.logging import init_logger, logger
@@ -81,7 +81,8 @@ class MaxPTrainer(Trainer):
     
         extra: dict = {}
         for model in self.model_parts:
-            for name, (z0_dw, dz_w0, dz_dw) in getattr(model, "_maxp_align", {}).items():
+            for name, vals in getattr(model, "_maxp_align", {}).items():
+                z0_dw, dz_w0, dz_dw = vals
                 extra[f"align/z0_dW/{name}"] = z0_dw
                 extra[f"align/dZ_w0/{name}"] = dz_w0
                 extra[f"align/dZ_dW/{name}"] = dz_dw
@@ -120,6 +121,14 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
         scale=args.scale,
         method=args.method,
         attn_backend="sdpa",
+        vocab_size=args.vocab_size,
+    )
+
+    dataloader_config = HuggingFaceTextDataLoader.Config(
+        dataset=args.dataset,
+        dataset_path=args.dataset_path,
+        num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor,
     )
 
     return Trainer.Config(
@@ -134,11 +143,14 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
                 solve_interval=args.solve_interval,
                 sample_size=args.sample_size,
                 c_ema=args.c_ema,
+                measure_only=args.measure_only,
+                alignment_table=args.alignment_table,
+                indep_wd=args.indep_wd,
             )],
         ),
         optimizer=OptimizersContainer.Config(
             lr=args.lr,
-            # fused requires CUDA; foreach works on CPU and GPU
+            weight_decay=args.weight_decay,
             implementation="foreach" if is_debug else "fused",
         ),
         lr_scheduler=LRSchedulersContainer.Config(
@@ -151,12 +163,7 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
             steps=steps,
             dtype="bfloat16",
         ),
-        dataloader=HuggingFaceTextDataLoader.Config(
-            dataset=args.dataset,
-            dataset_path=args.dataset_path,
-            num_workers=args.num_workers,
-            prefetch_factor=args.prefetch_factor,
-        ),
+        dataloader=dataloader_config,
         metrics=MetricsProcessor.Config(
             log_freq=10 if is_debug else 50,
             enable_tensorboard=not is_debug,
@@ -171,10 +178,16 @@ def build_trainer_config(args: argparse.Namespace) -> Trainer.Config:
         ),
         compile=CompileConfig(enable=not is_debug),
         activation_checkpoint=ActivationCheckpointConfig(mode="full"),
+        comm=CommConfig(init_timeout_seconds=600, train_timeout_seconds=1800),
+        debug=DebugConfig(seed=args.seed),
         validator=Validator.Config(
-            enable=not is_debug,
-            freq=500,
-            steps=50,
+            enable=not is_debug, 
+            freq=500, 
+            steps=50, 
+            dataloader=HuggingFaceTextDataLoader.Config(
+                dataset=args.val_dataset, 
+                infinite=False
+            )
         ),
     )
 
@@ -187,10 +200,23 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--scale", choices=list(SCALE_CONFIGS), default="s3",
                    help="Model scale")
-    p.add_argument("--method", choices=["maxP", "mup-full", "mup-no"], default="maxP",
+    p.add_argument("--method", choices=["maxP", "mup-no", "maxP-meas"], default="maxP",
                    help="maxP variant")
+    p.add_argument("--measure-only", action="store_true",
+                   help="Measure + log alignment without changing LRs (mup-no source runs)")
+    p.add_argument("--alignment-table", default=None,
+                   help="JSON alignment table from export_alignment.py (maxP-meas only)")
+    p.add_argument("--indep-wd", action="store_true",
+                   help="Independent (fully decoupled) weight decay: keep the AdamW decay "
+                        "step lr*wd*p identical across param groups and widths (it follows "
+                        "the LR schedule but not the per-layer n^{-c} multiplier). "
+                        "Maintained by the library across LR re-solves; works with every "
+                        "method.")
     p.add_argument("--lr", type=float, default=1e-3,
                    help="LR prefactor")
+    p.add_argument("--weight-decay", type=float, default=0.1,
+                   help="AdamW weight decay (torchtitan default 0.1). Note the decay step is "
+                        "lr*wd*p, so per-layer LRs rescale per-layer decay unless --indep-wd.")
     p.add_argument("--alignment-warmup", type=int, default=100,
                    help="Steps before first LP re-solve (maxP only)")
     p.add_argument("--solve-interval", type=int, default=200,
@@ -211,8 +237,12 @@ def parse_args() -> argparse.Namespace:
                    help="Directory to save checkpoints and logs")
     p.add_argument("--dataset", default="fineweb-edu-10bt",
                    help="HuggingFace dataset name or local path")
+    p.add_argument("--vocab-size", type=int, default=128256,
+                   help="Model vocab (embeddings + head). Default matches the LLaMA-3 tokenizer.")
     p.add_argument("--dataset-path", default=None,
                    help="Override dataset path (e.g. absolute path to c4_test on disk)")
+    p.add_argument("--val-dataset", default="c4_validation",
+                   help="Validation dataset name (default c4_validation)")
     p.add_argument("--num-workers", type=int, default=8,
                    help="DataLoader num_workers for prefetching")
     p.add_argument("--prefetch-factor", type=int, default=4,
@@ -230,7 +260,6 @@ def main() -> None:
     args = parse_args()
     config = build_trainer_config(args)
     trainer = MaxPTrainer(config)
-
     try:
         trainer.train()
     except Exception:
@@ -239,6 +268,10 @@ def main() -> None:
         raise
     else:
         trainer.close()
+        if int(os.environ.get("RANK", "0")) == 0:
+            # Sentinel for chained SLURM jobs: lets follow-up links skip
+            # without spinning up torchrun (see launch_sweep.py).
+            open(os.path.join(args.output_dir, "COMPLETED"), "w").close()
         if torch.distributed.is_initialized():
             torch.distributed.destroy_process_group()
         logger.info("Process group destroyed")

@@ -1,6 +1,7 @@
 """timm model registry and ParametrizedModule wrappers for vision experiments."""
 
 from __future__ import annotations
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -10,8 +11,64 @@ import torch.nn as nn
 import torch.nn.functional as F
 from timm.layers import Attention, PatchEmbed, maybe_add_mask, resolve_self_attn_mask
 from timm.layers.format import Format, nchw_to
+from timm.models.vision_transformer import VisionTransformer
 
 from maxp import ParametrizedModule
+
+
+# --- LLaMA-3-matched block internals (RMSNorm + SwiGLU + split-qkv) -----------
+# This ViT mirrors the LM (LLaMA-3) experiment's transformer body so the two
+# width-ladder runs differ only in {dataset, modality, task}, not architecture.
+
+def compute_ffn_hidden_dim(dim: int, multiple_of: int = 256,
+                           ffn_dim_multiplier: float = 1.3) -> int:
+    """SwiGLU hidden dim, identical to LM's torchtitan compute_ffn_hidden_dim."""
+    hidden_dim = int(2 * 4 * dim / 3)
+    hidden_dim = int(ffn_dim_multiplier * hidden_dim)
+    return multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+
+
+class _SwiGLU(nn.Module):
+    """SwiGLU FFN with SEPARATE w1/w2/w3 (mirrors LM FeedForward).
+
+    forward = w2(silu(w1(x)) * w3(x)). Separate projections (not packed) so each
+    gets its own ParametrizedModule and a per-type alignment key (w1/w2/w3).
+    Accepts the kwargs timm's Block passes to ``mlp_layer`` but computes its own
+    hidden dim so it stays matched to LM regardless of timm's mlp_ratio.
+    """
+
+    def __init__(self, in_features: int, hidden_features: int | None = None,
+                 act_layer=None, bias: bool = True, drop: float = 0.0, **kwargs) -> None:
+        super().__init__()
+        hidden = compute_ffn_hidden_dim(in_features)
+        self.w1 = nn.Linear(in_features, hidden, bias=bias)
+        self.w3 = nn.Linear(in_features, hidden, bias=bias)
+        self.w2 = nn.Linear(hidden, in_features, bias=bias)
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.drop(self.w2(F.silu(self.w1(x)) * self.w3(x)))
+
+
+# Attention logit scale knob. head_dim is held constant (64) across the width
+# ladder, so this is a width-independent constant — BOTH options give a flat
+# coord-check (verified) and neither affects muP width-transfer. We use
+# "inv_sqrt" = 1/sqrt(head_dim) to match the LM (LLaMA-3) run and because it
+# leaves the attn-output projection better-conditioned than the tiny-temperature
+# "inv_head_dim" = 1/head_dim (the previous vision value).
+_ATTN_SCALE_MODE = "inv_sqrt"
+
+
+def set_attn_scale_mode(mode: str) -> None:
+    global _ATTN_SCALE_MODE
+    assert mode in ("inv_head_dim", "inv_sqrt"), mode
+    _ATTN_SCALE_MODE = mode
+
+
+def _attn_scale(head_dim: int) -> float:
+    if _ATTN_SCALE_MODE == "inv_sqrt":
+        return 1.0 / math.sqrt(head_dim)
+    return 1.0 / head_dim
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,47 +80,41 @@ class ScaleConfig:
     hidden: int = 0
     depth: int = 0
     dropout: float = 0.0
+    embed_dim: int = 0
+    num_heads: int = 0
 
 
+# ViT width-only ladder (mirrors the Llama3 s1..s5 ladder):
+#   width axis = embed_dim, with head_dim = 64 and depth = 12 held CONSTANT.
+#   drop_path / dropout = 0 at every scale so the only thing varying is width
+#   (regularization that scales with width would confound the muP transfer test).
 SCALE_CONFIGS: dict[str, ScaleConfig] = {
     "debug": ScaleConfig(
-        model_name="vit_tiny_patch16_224", family="vit", image_size=224, drop_path_rate=0.0
+        model_name="vit_base_patch16_224", family="vit", image_size=224,
+        embed_dim=128, num_heads=2, depth=2,
     ),
-    "vit-s": ScaleConfig(
-        model_name="vit_small_patch16_224", family="vit", image_size=224, drop_path_rate=0.1
+    "s1": ScaleConfig(
+        model_name="vit_base_patch16_224", family="vit", image_size=224,
+        embed_dim=256, num_heads=4, depth=12,
     ),
-    "vit-b": ScaleConfig(
-        model_name="vit_base_patch16_224", family="vit", image_size=224, drop_path_rate=0.2
+    "s2": ScaleConfig(
+        model_name="vit_base_patch16_224", family="vit", image_size=224,
+        embed_dim=512, num_heads=8, depth=12,
     ),
-    "vit-l": ScaleConfig(
-        model_name="vit_large_patch16_224", family="vit", image_size=224, drop_path_rate=0.4
+    "s3": ScaleConfig(
+        model_name="vit_base_patch16_224", family="vit", image_size=224,
+        embed_dim=1024, num_heads=16, depth=12,
     ),
-    "mlp-s": ScaleConfig(
-        model_name="mlp", family="mlp", image_size=224, hidden=256, depth=4, dropout=0.0
+    "s4": ScaleConfig(
+        model_name="vit_base_patch16_224", family="vit", image_size=224,
+        embed_dim=2048, num_heads=32, depth=12,
     ),
-    "mlp-m": ScaleConfig(
-        model_name="mlp", family="mlp", image_size=224, hidden=512, depth=6, dropout=0.1
-    ),
-    "mlp-b": ScaleConfig(
-        model_name="mlp", family="mlp", image_size=224, hidden=1024, depth=8, dropout=0.2
-    ),
-    "mlp-l": ScaleConfig(
-        model_name="mlp", family="mlp", image_size=224, hidden=2048, depth=8, dropout=0.3
+    "s5": ScaleConfig(
+        model_name="vit_base_patch16_224", family="vit", image_size=224,
+        embed_dim=4096, num_heads=64, depth=12,
     ),
 }
 
-
-class MLPBlock(nn.Module):
-    def __init__(self, hidden: int, dropout: float) -> None:
-        super().__init__()
-        self.norm = nn.LayerNorm(hidden)
-        self.linear = nn.Linear(hidden, hidden)
-        self.act = nn.GELU()
-        self.drop = nn.Dropout(dropout)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.drop(self.act(self.linear(self.norm(x))))
-    
 
 class Patchify(nn.Module):
     def __init__(self, patch_size: tuple[int, int]):
@@ -79,55 +130,28 @@ class Patchify(nn.Module):
         return x
 
 
-class ScalableMLP(nn.Module):
-    def __init__(
-        self,
-        hidden: int,
-        depth: int,
-        num_classes: int,
-        dropout: float = 0.0,
-        image_size: int = 224,
-        patch_size: int = 16,
-    ) -> None:
-        super().__init__()
-        self.patch_size = (patch_size, patch_size)
-        in_features = 3 * patch_size * patch_size
-
-        self.patchify = Patchify(self.patch_size)
-        self.embed = nn.Linear(in_features, hidden)
-        self.blocks = nn.ModuleList([MLPBlock(hidden, dropout) for _ in range(depth)])
-        self.norm = nn.LayerNorm(hidden)
-        self.head = nn.Linear(hidden, num_classes)
-
-    def set_grad_checkpointing(self, enable: bool = False) -> None:
-        pass
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.patchify(x)
-        x = self.embed(x)
-        x = x.mean(dim=1)
-        
-        for block in self.blocks:
-            x = block(x)
-        
-        x = self.norm(x)
-        return self.head(x)
-
-
 class _ScaledAttention(Attention):
+    """MHA with SEPARATE wq/wk/wv/wo (mirrors LM), no QK-norm.
+
+    timm's fused ``qkv``/``proj`` are replaced by individually-wrapped
+    projections so each gets a per-type alignment key. QK-norm is omitted (LM
+    has none; timm's qk_norm already defaults off). Logit scale via the
+    coord-check-selected knob (see ``set_attn_scale_mode``).
+    """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        
-        d_model = kwargs.get("dim", args[0] if len(args) > 0 else None)
-        num_heads = kwargs.get("num_heads", args[1] if len(args) > 1 else None)
-        head_dim = kwargs.get("attn_head_dim", args[2] if len(args) > 2 else d_model // num_heads)
-        
-        self.scale = 1.0 / head_dim
-        self.qk_score = ParametrizedModule(
-            lambda q, k: (q, k), width_dim=head_dim,
-            layer_type="readout", scale_output=False
-        )
-    
+        dim = self.qkv.in_features
+        qkv_bias = self.qkv.bias is not None
+        proj_bias = self.proj.bias is not None
+        del self.qkv
+        self.wq = nn.Linear(dim, dim, bias=qkv_bias)
+        self.wk = nn.Linear(dim, dim, bias=qkv_bias)
+        self.wv = nn.Linear(dim, dim, bias=qkv_bias)
+        self.wo = nn.Linear(dim, dim, bias=proj_bias)
+        del self.proj
+        self.scale = _attn_scale(self.head_dim)
+
     def forward(
             self,
             x: torch.Tensor,
@@ -135,10 +159,9 @@ class _ScaledAttention(Attention):
             is_causal: bool = False,
     ) -> torch.Tensor:
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv.unbind(0)
-        q, k = self.qk_score(q, k)
-        q, k = self.q_norm(q), self.k_norm(k)
+        q = self.wq(x).reshape(B, N, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.wk(x).reshape(B, N, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.wv(x).reshape(B, N, self.num_heads, self.head_dim).transpose(1, 2)
 
         if self.fused_attn:
             x = F.scaled_dot_product_attention(
@@ -157,9 +180,8 @@ class _ScaledAttention(Attention):
             attn = self.attn_drop(attn)
             x = attn @ v
 
-        x = x.transpose(1, 2).reshape(B, N, self.attn_dim)
-        x = self.norm(x)
-        x = self.proj(x)
+        x = x.transpose(1, 2).reshape(B, N, C)
+        x = self.wo(x)
         x = self.proj_drop(x)
         return x
 
@@ -201,22 +223,18 @@ def create_model(
     cfg = SCALE_CONFIGS.get(scale)
     img_size = image_size if image_size is not None else cfg.image_size
 
-    if cfg.family == "mlp":
-        return ScalableMLP(
-            hidden=cfg.hidden,
-            depth=cfg.depth,
-            num_classes=num_classes,
-            dropout=cfg.dropout,
-            image_size=img_size,
-        )
-
     kwargs: dict = {
         "pretrained": False,
         "num_classes": num_classes,
         "drop_path_rate": cfg.drop_path_rate,
         "img_size": img_size,
+        "embed_dim": cfg.embed_dim,
+        "depth": cfg.depth,
+        "num_heads": cfg.num_heads,
         "attn_layer": _ScaledAttention,
         "embed_layer": _LinearPatchEmbed,
+        "norm_layer": nn.RMSNorm,   # LLaMA-3: RMSNorm (not LayerNorm)
+        "mlp_layer": _SwiGLU,       # LLaMA-3: SwiGLU w1/w2/w3 (not GELU MLP)
     }
     return timm.create_model(cfg.model_name, **kwargs)
 
@@ -265,37 +283,28 @@ def _install_vit_wrappers(model: nn.Module):
     for block in model.blocks:
         attn = block.attn
         ffn = block.mlp
-        
-        _wrap_module(attn, "qkv", embed_dim, "hidden")
-        _wrap_module(attn, "proj", embed_dim, "hidden")
-        
-        _wrap_module(ffn, "fc1", block.mlp.fc1.in_features, "hidden")
-        _wrap_module(ffn, "fc2", block.mlp.fc2.in_features, "hidden")
-    
+
+        _wrap_module(attn, "wq", embed_dim, "hidden")
+        _wrap_module(attn, "wk", embed_dim, "hidden")
+        _wrap_module(attn, "wv", embed_dim, "hidden")
+        _wrap_module(attn, "wo", embed_dim, "hidden")
+
+        _wrap_module(ffn, "w1", ffn.w1.in_features, "hidden")
+        _wrap_module(ffn, "w3", ffn.w3.in_features, "hidden")
+        _wrap_module(ffn, "w2", ffn.w2.in_features, "hidden")
+
     _wrap_module(model, "patch_embed.proj", embed_dim, "embedding")
     # _wrap_module(model, "pos_embed", embed_dim, "embedding")
     # _wrap_module(model, "cls_token", embed_dim, "embedding")
     _wrap_module(model, "head", embed_dim, "readout", a=0.0)
 
 
-def _install_mlp_wrappers(model: ScalableMLP) -> None:
-    hidden = model.embed.out_features
-    
-    for block in model.blocks:
-        _wrap_module(block, "linear", hidden, "hidden")
-
-    _wrap_module(model, "embed", hidden, "embedding")
-    _wrap_module(model, "head", hidden, "readout", a=0.0)
-
-
 def install_pm_wrappers(model: nn.Module):
-    if isinstance(model, ScalableMLP):
-        _install_mlp_wrappers(model)
-    elif "visiontransformer" in model.__class__.__name__.lower():
+    if isinstance(model, VisionTransformer):
         _install_vit_wrappers(model)
     else:
         raise TypeError(
-            f"Unsupported model type: {model.__class__.__name__}. Expected ViT or ScalableMLP."
+            f"Unsupported model type: {model.__class__.__name__}. Expected a timm VisionTransformer."
         )
 
 

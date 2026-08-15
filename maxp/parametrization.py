@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import pulp as plp
 import torch
 import torch.nn as nn
 
 from maxp.solver import find_c
 from maxp.module import ParametrizedModule
-from maxp.dag import DagNode, OpGraph, _DEFAULT_AB
+from maxp.alignment import compute_alignment
+from maxp.dag import DagNode, OpGraph, _DEFAULT_AB, trace_pm_dag
 
 
 # Alignment assumptions: (align_z0_dW, align_dZ_w0, align_dZ_dW) per layer
@@ -20,6 +22,22 @@ _ALIGNMENT_PRESETS = {
 def _extract_c(result: dict) -> dict[str, float]:
     """Extract c values from solver result, dropping None entries."""
     return {name: c for name, (c, _) in result.items() if c is not None}
+
+
+def indep_wd_rescale(optimizer_or_groups, ref_group: str = "_other") -> None:
+    """Equalize the AdamW decay step across param groups: sets
+    ``wd_g = wd_ref * lr_ref / lr_g`` so ``lr_g * wd_g`` is identical for every
+    group — decay follows the LR schedule, not per-layer multipliers.
+    Idempotent; ``Parametrization(indep_wd=True)`` re-applies it after every
+    LR change. Apply after the optimizer exists (so ``weight_decay`` is set)."""
+    groups = getattr(optimizer_or_groups, "param_groups", optimizer_or_groups)
+    refs = [g for g in groups if g.get("layer_name") == ref_group]
+    if len(refs) != 1 or "weight_decay" not in refs[0]:
+        raise RuntimeError(
+            f"indep_wd needs exactly one '{ref_group}' group with weight_decay set")
+    lr_ref, wd_ref = refs[0]["lr"], refs[0]["weight_decay"]
+    for g in groups:
+        g["weight_decay"] = wd_ref * lr_ref / g["lr"]
 
 
 def _solve_graph(
@@ -69,7 +87,7 @@ class Parametrization:
     ParametrizedModule, etc.) are collected into a single ``"_other"`` group
     at ``lr_prefactor``.
 
-    Phase 2 — dynamic alignment:
+    Dynamic alignment:
 
     Call :meth:`capture_initial` once before training, then call
     :meth:`step` after each ``optimizer.step()`` to measure actual alignment,
@@ -103,6 +121,17 @@ class Parametrization:
             Each step: ``align = ema * align_old + (1 - ema) * align_new``.
             0.0 means no smoothing (default).  Useful when alignment
             measurements are noisy (e.g. with ``use_training_activations``).
+        measure_only: If True, :meth:`step` measures alignment (including
+            for layers pinned via *alignment_overrides*) and stores it on
+            each PM for logging, but never re-solves the LP or changes
+            learning rates.  Use to passively record alignment during a
+            baseline run.
+        indep_wd: If True, keep the decoupled weight-decay step independent
+            of per-layer LR multipliers: :func:`indep_wd_rescale` is applied
+            to the optimizer after :meth:`refresh` and after every LR sync,
+            so ``lr_g * wd_g`` stays uniform across groups even when ``c``
+            changes.  Requires an optimizer whose param groups carry
+            ``weight_decay`` (any torch optimizer default does).
         resample_w0: If True, store a random seed per layer instead of
             cloning ``w_0``.  Regenerates ``w_0`` on-the-fly during alignment
             measurement, saving memory proportional to the total weight size.
@@ -134,12 +163,14 @@ class Parametrization:
         c_overrides: dict[str, float] | None = None,
         alignment_overrides: dict[str, tuple[float, float, float]] | None = None,
         sample_input: torch.Tensor | None = None,
-        # Phase 2 params
+        # Dynamic-alignment params
         warmup_steps: int = 0,
         solve_interval: int = 1,
         sample_size: int = 32,
         c_ema: float = 0.0,
         alignment_ema: float = 0.0,
+        measure_only: bool = False,
+        indep_wd: bool = False,
         resample_w0: bool = False,
         use_training_activations: bool = False,
         solver: "plp.LpSolver | None" = None,
@@ -208,7 +239,7 @@ class Parametrization:
         c_by_name = _solve_graph(graph, optimizer_type, c_fixed=c_fixed or None,
                                   solver=solver)
 
-        # Phase 2 state
+        # Dynamic-alignment state
         self._pms = pms
         self._c_fixed = c_fixed or None
         self._optimizer_type = optimizer_type
@@ -217,6 +248,8 @@ class Parametrization:
         self._sample_size = sample_size
         self._c_ema = c_ema
         self._alignment_ema = alignment_ema
+        self._measure_only = measure_only
+        self._indep_wd = indep_wd
         self._resample_w0 = resample_w0
         self._warm_start = warm_start
         self._use_training_activations = use_training_activations
@@ -340,12 +373,16 @@ class Parametrization:
                 k: v for k, v in optimizer.param_groups[0].items()
                 if k not in ("lr", "params")
             }
-            optimizer.param_groups[:] = [{**g, **non_lr_defaults} for g in groups]
+            # Defaults only fill keys the rebuilt group doesn't define, so a
+            # pre-refresh group's identity keys (layer_name, c, …) never leak.
+            optimizer.param_groups[:] = [{**non_lr_defaults, **g} for g in groups]
             # Reset state that referenced the old (now-dead) parameter ids
             optimizer.state.clear()
+            if self._indep_wd:
+                indep_wd_rescale(optimizer)
 
     # ------------------------------------------------------------------
-    # Phase 2: dynamic alignment
+    # Dynamic alignment
     # ------------------------------------------------------------------
 
     def _capture_activations(self, sample_input: torch.Tensor) -> dict[str, torch.Tensor]:
@@ -465,6 +502,8 @@ class Parametrization:
         if optimizer is not None:
             for our_group, opt_group in zip(self._param_groups, optimizer.param_groups):
                 opt_group["lr"] = our_group["lr"]
+            if self._indep_wd:
+                indep_wd_rescale(optimizer)
 
     def step(
         self,
@@ -518,10 +557,9 @@ class Parametrization:
             current = self._capture_activations(sample_input)
 
         # 2. Compute alignment per PM, write back to PM
-        from maxp.alignment import compute_alignment
 
         for name, pm in self._pms:
-            if name in self._alignment_pinned:
+            if name in self._alignment_pinned and not self._measure_only:
                 continue
             if pm._z0 is None or name not in current:
                 continue
@@ -542,6 +580,11 @@ class Parametrization:
                 pm.align_dZ_dW = a_ema * pm.align_dZ_dW + (1 - a_ema) * new_dZ_dW
             else:
                 pm.align_z0_dW, pm.align_dZ_w0, pm.align_dZ_dW = new_a0_dW, new_dZ_w0, new_dZ_dW
+
+        # Measure-only: alignment recorded on PMs for logging, LRs untouched
+        if self._measure_only:
+            self._sync_lrs(optimizer)
+            return
 
         # 3. Re-solve LP (skip c update if infeasible with current alignment)
         try:
@@ -565,7 +608,6 @@ class Parametrization:
 
     def _resolve(self) -> dict[str, float]:
         """Re-solve LP with current per-PM alignment values."""
-        import pulp as plp
 
         for name, pm in self._pms:
             if name in self._graph.nodes:
@@ -626,7 +668,6 @@ class Parametrization:
     @staticmethod
     def _trace_graph(model, sample_input, ab, alignment) -> OpGraph:
         """Trace data flow graph from model execution."""
-        from maxp.dag import trace_pm_dag
 
         preset = _ALIGNMENT_PRESETS.get(alignment)
         if preset is None:

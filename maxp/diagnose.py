@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import numpy as np
+import torch
+import torch.nn.functional as F
 
+from maxp.module import ParametrizedModule
 from maxp.trace import ClassifiedOp, classify, measure_activations
 
 
@@ -50,7 +53,6 @@ def diagnose_axis(
         affected_indices: list of ints — indices into all_ops
         act_stats: np.array of shape (n_all_ops, n_steps, n_widths, n_seeds)
     """
-    import torch
 
     # Classify using the two smallest widths
     small_model, _ = make_model_fn(widths[0])
@@ -93,9 +95,6 @@ def _default_train_step(model, param_groups):
     Assumes model has a ``.tok_emb`` attribute (plain ``nn.Embedding`` or
     ``ParametrizedModule`` wrapping one).
     """
-    import torch
-    import torch.nn.functional as F
-    from maxp.module import ParametrizedModule
 
     tok_emb = model.tok_emb
     if isinstance(tok_emb, ParametrizedModule):

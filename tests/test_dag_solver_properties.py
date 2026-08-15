@@ -11,8 +11,6 @@ Run with:
     python -m pytest tests/test_dag_solver_properties.py -v
 """
 
-import numpy as np
-import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -199,7 +197,7 @@ class TestPerOpDifferentiation:
     def test_swiglu_per_op_c_with_measured_alignment(self):
         """With per-op alignment values, gate/up/down get different c.
 
-        This is the core value of the DAG solver: when Phase 2 measures
+        This is the core value of the DAG solver: when dynamic measurement finds
         different alignment per op, the solver assigns different c per op.
         The chain solver can't do this — it collapses all 'hidden' ops
         into one c value.

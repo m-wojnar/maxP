@@ -8,6 +8,8 @@ while maintaining stability constraints based on alignment measurements.
 import numpy as np
 import pulp as plp
 
+from maxp.dag import MergeType
+
 
 def _min2_lp(lp: plp.LpProblem, a, b, M: float, var_id: list[int]):
     """
@@ -329,6 +331,124 @@ def find_c_sgd(
     return result
 
 
+def find_c_adafactor(
+    graph: "OpGraph",
+    solver: plp.LpSolver | None = None,
+    feature_learning: bool = False,
+    M: float = 10.0,
+    c_fixed: dict[str, float] | None = None,
+    c_prev: dict[str, float] | None = None,
+) -> dict[str, tuple[float | None, float]]:
+    """Find optimal per-op c values for Adafactor on an OpGraph.
+
+    Constraints from Everett et al. (2024), Table 2. Same structure as Adam
+    with the update scale ``n^{-c-b}`` instead of ``n^{-c}`` (parameter
+    scaling), i.e. ``a + c`` becomes ``a + b + c`` in the ΔW-terms, no
+    gradient coupling, plus the clamps ``c_l >= 0`` (preventing parameter
+    blow-up as ``n^{-c·t}`` across steps).
+    """
+    if solver is None:
+        solver = plp.PULP_CBC_CMD(msg=False)
+
+    graph.validate()
+    topo = graph.topological_order()
+    var_id = [0]
+
+    lp = plp.LpProblem("maxp_adafactor", plp.LpMinimize)
+
+    c_vars: dict[str, plp.LpVariable | float | None] = {}
+    r_vars: dict[str, plp.LpVariable] = {}
+
+    for node in topo:
+        r_vars[node.name] = plp.LpVariable(f"r_{node.name}")
+        if node.has_weight:
+            if c_fixed and node.name in c_fixed:
+                c_vars[node.name] = c_fixed[node.name]
+            else:
+                c_var = plp.LpVariable(f"c_{node.name}", lowBound=0)
+                if c_prev and node.name in c_prev:
+                    c_var.setInitialValue(c_prev[node.name])
+                c_vars[node.name] = c_var
+        else:
+            c_vars[node.name] = None
+
+    sinks = {n.name for n in graph.sinks()}
+
+    for node in topo:
+        is_source = len(node.predecessors) == 0
+        is_sink = node.name in sinks
+        ab_sum = node.a + node.b
+
+        # Same stability-at-init validation as Adam
+        if is_source and node.has_weight:
+            if not np.isclose(ab_sum, 0.0):
+                raise ValueError(
+                    f"Source '{node.name}': a+b={ab_sum}, must be 0 for stability at init.")
+        elif not is_source and not is_sink and node.has_weight:
+            if not np.isclose(ab_sum, 0.5):
+                raise ValueError(
+                    f"Hidden '{node.name}': a+b={ab_sum}, must be 0.5 for stability at init.")
+        elif is_sink and node.has_weight:
+            if ab_sum < 0.5 - 1e-12:
+                raise ValueError(
+                    f"Sink '{node.name}': a+b={ab_sum}, must be >= 0.5 for stability at init.")
+
+        r_in = _compute_r_in(lp, node, r_vars, var_id, M)
+
+        r = r_vars[node.name]
+        c = c_vars[node.name]
+
+        if is_source:
+            if node.has_weight:
+                # Update scale n^{-c-b}, multiplier n^{-a}: r = a + b + c (= c)
+                lp += r == ab_sum + c
+            else:
+                lp += r == node.a
+        else:
+            if node.has_weight:
+                x1 = plp.LpVariable(f"x1_{node.name}")
+                x2 = plp.LpVariable(f"x2_{node.name}")
+                x3 = plp.LpVariable(f"x3_{node.name}")
+
+                lp += x1 == ab_sum + c - node.align_z0_dW
+                lp += x2 == ab_sum + c + r_in - node.align_dZ_dW
+                lp += x3 == ab_sum + r_in - node.align_dZ_w0
+                lp += r == _min_lp(lp, x1, x2, x3, M=M, var_id=var_id)
+            else:
+                lp += r == r_in + node.a
+
+        lp += r >= 0
+
+    if feature_learning:
+        for sink_node in graph.sinks():
+            for pred_name in sink_node.predecessors:
+                lp += r_vars[pred_name] == 0
+
+    weight_c = [c for c in c_vars.values()
+                if c is not None and not isinstance(c, (int, float))]
+    if weight_c:
+        lp += plp.lpSum(weight_c)
+
+    lp.solve(solver)
+
+    if lp.status != plp.LpStatusOptimal:
+        raise ValueError("LP solver did not find an optimal solution; problem may be infeasible.")
+
+    result: dict[str, tuple[float | None, float]] = {}
+    for node in topo:
+        cv = c_vars[node.name]
+        if cv is None:
+            c_val = None
+        elif isinstance(cv, (int, float)):
+            c_val = float(cv)
+        else:
+            c_val = cv.varValue
+        r_val = r_vars[node.name].varValue
+        result[node.name] = (c_val, r_val)
+
+    return result
+
+
 def find_c(
     graph: "OpGraph",
     optimizer_type: str = "adam",
@@ -355,13 +475,15 @@ def find_c(
         return find_c_adam(graph, solver, feature_learning, M, c_fixed=c_fixed, c_prev=c_prev)
     elif optimizer_type.lower() == "sgd":
         return find_c_sgd(graph, solver, feature_learning, M, c_fixed=c_fixed, c_prev=c_prev)
+    elif optimizer_type.lower() == "adafactor":
+        return find_c_adafactor(graph, solver, feature_learning, M, c_fixed=c_fixed, c_prev=c_prev)
     else:
-        raise ValueError(f"Unknown optimizer_type: {optimizer_type}. Must be 'adam' or 'sgd'.")
+        raise ValueError(
+            f"Unknown optimizer_type: {optimizer_type}. Must be 'adam', 'sgd' or 'adafactor'.")
 
 
 def _compute_r_in(lp, node, r_vars, var_id, M):
     """Compute r_in for a node from its predecessors, respecting merge type."""
-    from maxp.dag import MergeType
 
     if not node.predecessors:
         return None

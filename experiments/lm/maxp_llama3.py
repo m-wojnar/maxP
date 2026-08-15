@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from functools import partial
 
 import torch.nn as nn
@@ -84,6 +83,7 @@ def _make_model_config(
     n_heads: int,
     n_kv_heads: int,
     vocab_size: int = 128256,
+    output_vocab_size: int | None = None,
     attn_backend: str = "sdpa",
 ) -> Llama3Model.Config:
     hidden_dim = compute_ffn_hidden_dim(dim, multiple_of=256, ffn_dim_multiplier=1.3)
@@ -129,21 +129,26 @@ def parallelize_llama(model, **kwargs):
     return _parallelize_llama(model, **kwargs)
 
 
-# Scale definitions: (dim, n_layers, n_heads, n_kv_heads[, vocab_size])
-# Approximate parameter counts (no weight tying, vocab=128256):
-#   debug: tiny 4-layer (CPU smoke tests, vocab=2048)
-#   s1:  ~21M   s2: ~81M   s3: ~218M   s4: ~1.09B   s5: ~2.71B
+# Scale definitions: width-only ladder for muP-style width scaling.
+# Non-embed parameter counts (vocab=128256):
+#   debug: tiny 4-layer (CPU smoke tests)
+#   s1: 11.4M   s2: 40.9M   s3: 163.6M   s4: 654.4M   s5: 2.62B
 SCALE_CONFIGS: dict[str, dict] = {
     "debug": dict(dim=256, n_layers=4, n_heads=4, n_kv_heads=2),
-    "s1": dict(dim=512, n_layers=6, n_heads=8, n_kv_heads=4),
-    "s2": dict(dim=768, n_layers=10, n_heads=12, n_kv_heads=4),
-    "s3": dict(dim=1024, n_layers=16, n_heads=16, n_kv_heads=4),
-    "s4": dict(dim=2048, n_layers=20, n_heads=16, n_kv_heads=4),
-    "s5": dict(dim=2560, n_layers=32, n_heads=20, n_kv_heads=4),
+    "s1": dict(dim=256, n_layers=12, n_heads=4, n_kv_heads=1),
+    "s2": dict(dim=512, n_layers=12, n_heads=8, n_kv_heads=2),
+    "s3": dict(dim=1024, n_layers=12, n_heads=16, n_kv_heads=4),
+    "s4": dict(dim=2048, n_layers=12, n_heads=32, n_kv_heads=8),
+    "s5": dict(dim=4096, n_layers=12, n_heads=64, n_kv_heads=16),
 }
 
 
-def maxp_model_registry(scale: str, method: str, attn_backend: str = "sdpa") -> ModelSpec:
+def maxp_model_registry(
+    scale: str,
+    method: str,
+    attn_backend: str = "sdpa",
+    vocab_size: int = 128256,
+) -> ModelSpec:
     """Build a ModelSpec for maxP LLaMA-3 training.
 
     Parametrization config (alignment_warmup, solve_interval, etc.) lives in
@@ -151,15 +156,21 @@ def maxp_model_registry(scale: str, method: str, attn_backend: str = "sdpa") -> 
 
     Args:
         scale: One of "debug", "s1" … "s5".
-        method: "maxP" (dynamic), "mup-full" (static, full align), or
-            "mup-no" (static, no align).
+        method: "maxP" (dynamic), "mup-no" (static, no align), or
+            "maxP-meas" (static, c solved from a measured alignment table).
         attn_backend: Attention backend ("sdpa", "flex", "varlen").
+        vocab_size: Input vocab V (token embeddings). Default matches the
+            LLaMA-3 tokenizer.
     """
     if scale not in SCALE_CONFIGS:
         raise ValueError(f"Unknown scale '{scale}'. Choose from {list(SCALE_CONFIGS)}")
 
     kwargs = SCALE_CONFIGS[scale].copy()
-    model_config = _make_model_config(attn_backend=attn_backend, **kwargs)
+    model_config = _make_model_config(
+        attn_backend=attn_backend,
+        vocab_size=vocab_size,
+        **kwargs,
+    )
 
     return ModelSpec(
         name="maxp_llama3",

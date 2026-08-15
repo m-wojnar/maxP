@@ -62,7 +62,7 @@ class HFVisionDataset(Dataset):
         sample = self._hf[idx]
         image = sample[self._preset.image_key].convert("RGB")
         label = sample[self._preset.label_key]
-        x = self._transform(image)
+        x = self._transform(image).to(torch.bfloat16)
         y = torch.tensor(label, dtype=torch.long)
         return x, y
 
@@ -74,15 +74,19 @@ def make_loader(
     num_workers: int,
     is_train: bool,
     prefetch_factor: int,
+    generator: torch.Generator | None = None,
 ) -> DataLoader:
     kwargs: dict = {
         "dataset": ds,
         "batch_size": batch_size,
         "num_workers": num_workers,
         "pin_memory": torch.cuda.is_available(),
+        "shuffle": is_train,
         "drop_last": is_train,
         "persistent_workers": (num_workers > 0),
     }
+    if is_train and generator is not None:
+        kwargs["generator"] = generator
     if num_workers > 0:
         kwargs["prefetch_factor"] = prefetch_factor
     return DataLoader(**kwargs)
@@ -96,6 +100,7 @@ def build_dataloaders(
     prefetch_factor: int = 2,
     train_transform=None,
     eval_transform=None,
+    generator: torch.Generator | None = None,
 ) -> tuple[DataLoader, DataLoader | None, DatasetPreset]:
     if train_transform is None or eval_transform is None:
         raise ValueError(
@@ -112,6 +117,7 @@ def build_dataloaders(
         num_workers=num_workers,
         is_train=True,
         prefetch_factor=prefetch_factor,
+        generator=generator,
     )
 
     val_hf = load_dataset(preset.dataset_id, split=preset.val_split, streaming=False)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
@@ -45,7 +44,7 @@ class _SDPAWrapper(Module):
     def forward(self, q, k, v, **kw):
         q, k = self.score(q, k)
         kw.pop("scale", None)
-        return self.inner(q, k, v, scale=self.score.scale, **kw)
+        return self.inner(q, k, v, scale=self.score.scale, is_causal=True, **kw)
 
 
 def install_pm_wrappers(model: nn.Module) -> None:
@@ -62,7 +61,9 @@ def install_pm_wrappers(model: nn.Module) -> None:
     assert isinstance(model, Llama3Model), f"Expected Llama3Model, got {type(model)}"
     cfg = model.config
     d_model: int = cfg.dim
-    head_dim: int = next(iter(model.layers.values())).attention.head_dim
+
+    first_block = next(iter(model.layers.values()))
+    head_dim: int = first_block.attention.head_dim
 
     for block in model.layers.values():
         attn = block.attention
@@ -80,6 +81,7 @@ def install_pm_wrappers(model: nn.Module) -> None:
 
         attn.inner_attention = _SDPAWrapper(attn.inner_attention, head_dim)
 
+        # FFN: SwiGLU (w1/w3 in d_model, w2 in d_ff).
         d_ff: int = ffn.w1.out_features
         _wrap(ffn, "w1", d_model, "hidden")
         _wrap(ffn, "w3", d_model, "hidden")
@@ -100,13 +102,16 @@ class MaxPConverter(Configurable, ModelConverter):
 
     @dataclass(kw_only=True, slots=True)
     class Config(Configurable.Config):
-        method: str = "maxP"          # "maxP" | "mup-full" | "mup-no"
+        method: str = "maxP"          # "maxP" | "mup-no" | "maxP-meas"
         lr_prefactor: float = 1e-3
-        alignment_warmup: int = 10    # maxP only
-        solve_interval: int = 100     # maxP only
-        sample_size: int = 32         # maxP only
+        alignment_warmup: int = 10    # maxP / measure_only
+        solve_interval: int = 100     # maxP / measure_only
+        sample_size: int = 32         # maxP / measure_only
         c_ema: float = 0.0            # maxP only
         use_training_activations: bool = False  # maxP only
+        measure_only: bool = False    # measure + log alignment, never touch LRs
+        alignment_table: str | None = None  # JSON path; required for maxP-meas
+        indep_wd: bool = False        # decay step independent of per-layer LR multipliers
 
     def __init__(
         self,
@@ -118,21 +123,36 @@ class MaxPConverter(Configurable, ModelConverter):
         self._cfg = config
 
     def convert(self, model: nn.Module) -> None:
-        install_pm_wrappers(model)
         cfg = self._cfg
+        install_pm_wrappers(model)
+        if cfg.method not in ("maxP", "mup-no", "maxP-meas"):
+            raise ValueError(f"Unknown method '{cfg.method}'")
+
+        if cfg.measure_only and cfg.method == "maxP":
+            raise ValueError("measure_only contradicts dynamic method 'maxP'; use 'mup-no'")
+
+        alignment_overrides = None
+        if cfg.method == "maxP-meas":
+            if cfg.alignment_table is None:
+                raise ValueError("method 'maxP-meas' requires alignment_table")
+            alignment_overrides = _load_alignment_table(cfg.alignment_table)
+
         param = Parametrization(
             model,
             sample_input=_make_sample_input(model),
-            alignment="full" if "full" in cfg.method else "no",
+            alignment="no",
             lr_prefactor=cfg.lr_prefactor,
+            alignment_overrides=alignment_overrides,
             warmup_steps=cfg.alignment_warmup,
             solve_interval=cfg.solve_interval,
             sample_size=cfg.sample_size,
             c_ema=cfg.c_ema,
+            measure_only=cfg.measure_only,
+            indep_wd=cfg.indep_wd,
             use_training_activations=cfg.use_training_activations,
         )
         model._maxp_param = param
-        if cfg.method == "maxP":
+        if cfg.method == "maxP" or cfg.measure_only:
             model._is_dynamic = True
             model._maxp_align = {
                 name: (pm.align_z0_dW, pm.align_dZ_w0, pm.align_dZ_dW)
@@ -142,6 +162,19 @@ class MaxPConverter(Configurable, ModelConverter):
 
     def post_optimizer_hook(self, model: nn.Module | list[nn.Module]) -> None:
         pass
+
+
+def _load_alignment_table(path: str) -> dict[str, tuple[float, float, float]]:
+    """Load measured alignment from JSON written by export_alignment.py.
+
+    Keys are exact PM names, leaf suffixes (e.g. "wo") or layer types;
+    values are [align_z0_dW, align_dZ_w0, align_dZ_dW].
+    """
+    import json
+
+    with open(path) as f:
+        table = json.load(f)
+    return {k: tuple(v) for k, v in table.items()}
 
 
 def _make_sample_input(model: nn.Module) -> torch.Tensor | None:
@@ -168,6 +201,20 @@ def post_optimizer_build_fn(optimizers, model_parts: list[nn.Module], parallel_d
     Re-runs the tensor-bound bits of Parametrization (weight init + per-layer
     param_groups) now that the model has been materialized off meta device,
     and splices the resulting groups into the optimizer.
+
+    ``refresh()`` also applies independent weight decay when the converter was
+    configured with ``indep_wd`` (and re-applies it on every later LR sync).
+    Ordering is load-bearing: ``refresh()`` rebuilds every group, copying
+    non-lr keys (including weight_decay) from the pre-refresh
+    ``param_groups[0]``, so a per-group weight_decay set any earlier would be
+    silently erased. torchtitan's LambdaLR (built after this hook) writes only
+    ``lr``.
     """
+
     for optimizer, model in zip(optimizers, model_parts):
         model._maxp_param.refresh(optimizer=optimizer)
+        model._maxp_wd_expect = {}
+
+        for g in optimizer.param_groups:
+            ln = g.get("layer_name", "?")
+            model._maxp_wd_expect[ln] = g.get("weight_decay", 0.0)

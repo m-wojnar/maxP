@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import time
 from pathlib import Path
@@ -17,14 +16,25 @@ import torch.nn.functional as F
 import wandb
 from timm.data import create_transform, resolve_model_data_config
 from timm.loss import LabelSmoothingCrossEntropy
-from timm.scheduler.cosine_lr import CosineLRScheduler
 from torch.utils.tensorboard import SummaryWriter
 
 from maxp import Parametrization
 
 from hf_vision_data import DATASET_CONFIGS, build_dataloaders
 from maxp_timm import SCALE_CONFIGS, count_trainable_params, create_model, install_pm_wrappers
-from utils import append_json, collect_alignments, collect_layer_lrs, save_checkpoint, write_json
+from utils import (
+    append_json,
+    collect_alignments,
+    collect_layer_lrs,
+    latest_checkpoint,
+    load_checkpoint,
+    save_checkpoint,
+    write_json,
+)
+
+# Device peak dense throughput for the MFU estimate (GH200 bf16 ≈ 989 TFLOP/s).
+# Override via env for a different GPU/dtype, or MFU is off by the mis-spec ratio.
+DEVICE_PEAK_FLOPS = float(os.getenv("DEVICE_PEAK_FLOPS", 989e12))
 
 
 def evaluate(
@@ -53,8 +63,8 @@ def evaluate(
                 logits = model(xb)
                 loss = F.cross_entropy(logits, yb)
 
-            preds = logits.argmax(dim=1)
             total_loss += float(loss.item()) * xb.size(0)
+            preds = logits.argmax(dim=1)
             total_correct += int((preds == yb).sum().item())
             if num_classes is not None and num_classes >= 5:
                 total_top5 += int(
@@ -71,12 +81,13 @@ def evaluate(
     if total_count == 0:
         return {}
 
-    return {
+    metrics = {
         "loss/val_loss": total_loss / total_count,
-        "loss/val_top1": total_correct / total_count,
-        "loss/val_top5": total_top5 / total_count,
         "loss/val_samples": float(total_count),
     }
+    metrics["loss/val_top1"] = total_correct / total_count
+    metrics["loss/val_top5"] = total_top5 / total_count
+    return metrics
 
 
 def current_lr_prefactor(optimizer: torch.optim.Optimizer) -> float:
@@ -88,29 +99,49 @@ def current_lr_prefactor(optimizer: torch.optim.Optimizer) -> float:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scale", type=str, default="vit-s")
-    parser.add_argument("--method", choices=["maxP", "mup-full", "mup-no"], default="maxP")
+    parser.add_argument("--scale", type=str, default="s2")
+    parser.add_argument("--method", choices=["mup-no", "maxP-meas"], default="mup-no")
+    parser.add_argument("--measure-only", action="store_true", default=False,
+                        help="Measure + log alignment without changing LRs (mup-no source runs)")
+    parser.add_argument("--alignment-table", default=None,
+                        help="JSON alignment table from export_alignment.py (maxP-meas only)")
+    parser.add_argument("--c-ema", type=float, default=0.0, help="EMA smoothing for c (maxP only)")
     parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dataset", type=str, default="imagenet12k")
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--num-workers", type=int, default=8)
-    parser.add_argument("--prefetch-factor", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--epochs", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=16)
+    parser.add_argument("--prefetch-factor", type=int, default=2)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--val-interval", type=int, default=500)
     parser.add_argument("--val-steps", type=int, default=50)
     parser.add_argument("--alignment-warmup", type=int, default=100)
     parser.add_argument("--solve-interval", type=int, default=200)
-    parser.add_argument("--sample-size", type=int, default=32)
+    parser.add_argument("--sample-size", type=int, default=128,
+                        help="Alignment-measurement images; 128x196 patches ~= LM 8x3072 positions")
     parser.add_argument("--lr-warmup", type=int, default=None)
-    parser.add_argument("--label-smoothing", type=float, default=0.1)
+    parser.add_argument("--label-smoothing", type=float, default=0.0,
+                        help="0.0 to match the LM run (plain cross-entropy)")
+    parser.add_argument("--weight-decay", type=float, default=0.1,
+                        help="AdamW weight decay (matched to the LM run's 0.1). The decay step "
+                             "is lr*wd*p, so per-layer LRs rescale per-layer decay unless "
+                             "--indep-wd.")
+    parser.add_argument("--indep-wd", action="store_true", default=False,
+                        help="Independent (fully decoupled) weight decay: rescale each param "
+                             "group's weight_decay by lr_other/lr_group at install so the decay "
+                             "step is identical across groups (follows the LR schedule, not the "
+                             "per-layer n^{-c} multiplier).")
     parser.add_argument("--no-compile", action="store_true", default=False)
     parser.add_argument("--debug", action="store_true", default=False)
     parser.add_argument("--log-interval", type=int, default=20)
-    parser.add_argument("--checkpoint-interval", type=int, default=None)
+    parser.add_argument("--checkpoint-interval", type=int, default=1000,
+                        help="Save a checkpoint every N steps (all scales)")
+    parser.add_argument("--keep-latest-k", type=int, default=2,
+                        help="Number of recent step checkpoints to retain")
     parser.add_argument("--grad-clip", type=float, default=1.0)
-    parser.add_argument("--resume", default=None)
+    parser.add_argument("--resume", action="store_true", default=False,
+                        help="Resume from the latest checkpoint in <output-dir>/checkpoint if present")
     parser.add_argument("--output-dir", type=str, default="runs")
     return parser.parse_args()
 
@@ -129,10 +160,10 @@ def main() -> None:
     scale_cfg = SCALE_CONFIGS.get(args.scale)
     dataset_cfg = DATASET_CONFIGS.get(args.dataset)
 
+    steps_per_epoch = max(1, dataset_cfg.train_samples // args.batch_size)
     if args.max_steps is not None:
         total_steps = args.max_steps
     else:
-        steps_per_epoch = max(1, dataset_cfg.train_samples // args.batch_size)
         total_steps = steps_per_epoch * args.epochs
 
     num_classes = dataset_cfg.num_classes
@@ -141,26 +172,17 @@ def main() -> None:
         num_classes=num_classes,
         image_size=scale_cfg.image_size,
     )
-    model.set_grad_checkpointing(enable=True)
+    model.set_grad_checkpointing(enable=args.scale in ("s4", "s5"))
     
     install_pm_wrappers(model)
     model = model.to(device)
     model.train()
 
-    if scale_cfg.family == "mlp":
-        from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-        model_data_cfg = {
-            "input_size": (3, scale_cfg.image_size, scale_cfg.image_size),
-            "mean": IMAGENET_DEFAULT_MEAN,
-            "std": IMAGENET_DEFAULT_STD,
-            "interpolation": "bicubic",
-            "crop_pct": 0.875,
-        }
-    else:
-        model_data_cfg = resolve_model_data_config(model)
-    train_transform = create_transform(**model_data_cfg, is_training=True)
+    model_data_cfg = resolve_model_data_config(model)
     eval_transform = create_transform(**model_data_cfg, is_training=False)
+    train_transform = create_transform(**model_data_cfg, is_training=True)
 
+    data_gen = torch.Generator()  # reseeded per pass so the shuffle order is reproducible
     train_loader, val_loader, _ = build_dataloaders(
         dataset_name=args.dataset,
         batch_size=args.batch_size,
@@ -168,11 +190,19 @@ def main() -> None:
         prefetch_factor=args.prefetch_factor,
         train_transform=train_transform,
         eval_transform=eval_transform,
+        generator=data_gen,
     )
 
     sample_input = torch.randn(1, 3, scale_cfg.image_size, scale_cfg.image_size, device=device)
-    alignment_mode = "full" if "full" in args.method else "no"
-    dynamic = args.method == "maxP"
+    alignment_mode = "no"
+    dynamic = args.measure_only
+
+    alignment_overrides = None
+    if args.method == "maxP-meas":
+        if args.alignment_table is None:
+            raise ValueError("method 'maxP-meas' requires --alignment-table")
+        with open(args.alignment_table) as f:
+            alignment_overrides = {k: tuple(v) for k, v in json.load(f).items()}
 
     param = Parametrization(
         model,
@@ -180,24 +210,42 @@ def main() -> None:
         alignment=alignment_mode,
         lr_prefactor=args.lr,
         sample_input=sample_input,
+        alignment_overrides=alignment_overrides,
         warmup_steps=args.alignment_warmup,
         solve_interval=args.solve_interval,
         sample_size=args.sample_size,
+        c_ema=args.c_ema,
+        measure_only=args.measure_only,
+        indep_wd=args.indep_wd,
     )
     
+    # Optimizer + schedule matched to the LM (torchtitan) run: AdamW betas
+    # (0.9, 0.95), wd 0.1, eps 1e-8; WSD schedule = 10% linear warmup, stable,
+    # last 10% linear decay to 0 (torchtitan decay_ratio=0.1, decay_type=linear).
     optimizer = torch.optim.AdamW(
         param.param_groups,
         lr=args.lr,
-        betas=(0.9, 0.999),
-        weight_decay=0.05,
+        betas=(0.9, 0.95),
+        weight_decay=args.weight_decay,
     )
-    lr_warmup = args.lr_warmup or int(0.05 * total_steps)
-    scheduler = CosineLRScheduler(
-        optimizer,
-        t_initial=total_steps - lr_warmup,
-        warmup_t=lr_warmup,
-        warmup_prefix=True,
-    )
+
+    # Splice solved groups into the optimizer; refresh applies indep_wd when
+    # the flag is set and the library re-applies it on every later LR sync.
+    param.refresh(optimizer=optimizer)
+
+    lr_warmup = args.lr_warmup or int(0.10 * total_steps)
+    lr_decay = int(0.10 * total_steps)
+    lr_stable = max(0, total_steps - lr_warmup - lr_decay)
+
+    def _wsd(step: int) -> float:
+        if step < lr_warmup:
+            return (step + 1) / max(1, lr_warmup)
+        if step < lr_warmup + lr_stable:
+            return 1.0
+        t = step - lr_warmup - lr_stable
+        return max(0.0, 1.0 - t / max(1, lr_decay))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, _wsd)
     
     smooth_xe_loss = LabelSmoothingCrossEntropy(smoothing=args.label_smoothing)
 
@@ -220,9 +268,14 @@ def main() -> None:
         log_dir.mkdir(parents=True, exist_ok=True)
         tb_writer = SummaryWriter(log_dir=str(log_dir))
     
+    # For the 6ND MFU estimate: N = trainable params, D = tokens/sample.
+    # ViT tokens = (img/patch)^2 patches + 1 CLS (patch16 across all configs).
+    n_params = count_trainable_params(model)
+    tokens_per_sample = (scale_cfg.image_size // 16) ** 2 + 1
+
     print("\n=== maxP vision run ===")
     print(f"  scale:            {args.scale} ({scale_cfg.model_name})")
-    print(f"  params:           {count_trainable_params(model)}")
+    print(f"  params:           {n_params}")
     print(f"  method:           {args.method}")
     print(f"  dataset:          {args.dataset}")
     print(f"  train_samples:    {dataset_cfg.train_samples}")
@@ -240,18 +293,35 @@ def main() -> None:
     global_step = start_epoch = total_seen = 0
     align_sample: torch.Tensor | None = None
 
+    if args.resume:
+        ckpt_path = latest_checkpoint(output_dir / "checkpoint")
+        if ckpt_path is not None:
+            progress = load_checkpoint(ckpt_path, model=model, optimizer=optimizer, device=device)
+            global_step = progress["step"]
+            start_epoch = progress["epoch"]
+            total_seen = progress["samples_seen"]
+            print(f"[resume] loaded {ckpt_path} — step={global_step} epoch={start_epoch}")
+        else:
+            print(f"[resume] no checkpoint under {output_dir/'checkpoint'} — starting fresh")
+
+    step_budget = total_steps
+
     t0 = time.time()
     last_log_time = t0
     last_log_seen = total_seen
     stop_training = False
 
-    for epoch in range(start_epoch, args.epochs):
+    pass_idx = start_epoch
+    while not stop_training:
+        # Reseed the shuffle each pass → reproducible, deterministic order.
+        data_gen.manual_seed(args.seed * 1_000_000 + pass_idx)
+        epoch = pass_idx
         for xb, yb in train_loader:
             xb = xb.to(device, non_blocking=True)
             yb = yb.to(device, non_blocking=True)
 
             if dynamic and align_sample is None:
-                align_sample = xb[:args.sample_size].detach().clone().to(device)
+                align_sample = xb[:args.sample_size].detach().clone().to(device).float()
                 param.capture_initial(align_sample)
 
             optimizer.zero_grad()
@@ -263,7 +333,7 @@ def main() -> None:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             optimizer.step()
-            scheduler.step(global_step)
+            scheduler.step()
 
             if dynamic:
                 param.lr_prefactor = current_lr_prefactor(optimizer)
@@ -300,6 +370,7 @@ def main() -> None:
                     "perf/samples_seen": total_seen,
                     "perf/samples_per_sec": total_seen / elapsed,
                     "perf/samples_per_sec_interval": interval_sps,
+                    "perf/mfu": 6 * n_params * tokens_per_sample * interval_sps / DEVICE_PEAK_FLOPS,
                     "lr/lr_prefactor": current_lr_prefactor(optimizer),
                     **collect_layer_lrs(param),
                     **eval_metrics,
@@ -333,14 +404,14 @@ def main() -> None:
                     epoch=epoch,
                     samples_seen=total_seen,
                     args=args,
+                    keep_latest_k=args.keep_latest_k,
                 )
 
-            if args.max_steps is not None and global_step >= args.max_steps:
+            if global_step >= step_budget:
                 stop_training = True
                 break
 
-        if stop_training:
-            break
+        pass_idx += 1
 
     eval_metrics = evaluate(
         model=model,
@@ -372,6 +443,9 @@ def main() -> None:
     )
 
     print(f"\nDone. Total training time: {elapsed:.1f} seconds.")
+    if torch.cuda.is_available():
+        print(f"Peak CUDA mem: {torch.cuda.max_memory_allocated() / 1e9:.1f} GB / "
+              f"{torch.cuda.get_device_properties(device).total_memory / 1e9:.0f} GB")
     print(json.dumps(eval_metrics, indent=2, sort_keys=True))
 
 

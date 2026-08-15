@@ -39,7 +39,7 @@ class DagNode:
     predecessors: list[str] = field(default_factory=list)
     successors: list[str] = field(default_factory=list)
     merge_type: MergeType = MergeType.MIN
-    # Per-op alignment (preset for now, measured in Phase 2)
+    # Per-op alignment (preset, or measured dynamically)
     align_z0_dW: float = 1.0   # alignment of z0 @ dW^T term
     align_dZ_w0: float = 0.5   # alignment of dZ @ W0^T term
     align_dZ_dW: float = 1.0   # alignment of dZ @ dW^T term
