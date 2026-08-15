@@ -210,7 +210,7 @@ data
 jobs
 outputs
 assets
-runs
+runs*
 figs
 analysis
 wandb
